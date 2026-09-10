@@ -20,6 +20,14 @@ up: build
     sudo docker run -d --name {{image}} --privileged --device=/dev/net/tun -p 127.0.0.1:{{port}}:8080 -v "$PWD/{{data}}:/data" -e NUM_WARPS={{warps}} -e PROXY_PORT=8080 -e HOLD_TIMEOUT=10 {{image}}
     @echo "up. try: just health && just via-proxy"
 
+# Detached container for Cloudflare Tunnel: loopback-only port + autorestart.
+# Point cloudflared at http://127.0.0.1:<listen>, e.g. `just tunnel-up 18080`.
+tunnel-up listen="8080": build
+    mkdir -p {{data}}
+    sudo docker rm -f {{image}}-tunnel 2>/dev/null || true
+    sudo docker run -d --name {{image}}-tunnel --restart unless-stopped --privileged --device=/dev/net/tun -p 127.0.0.1:{{listen}}:8080 -v "$PWD/{{data}}:/data" -e NUM_WARPS={{warps}} -e PROXY_PORT=8080 -e HOLD_TIMEOUT=10 {{image}}
+    @echo "tunnel-ready: 127.0.0.1:{{listen}} -> container :8080 (restart unless-stopped)"
+
 stop:
     -sudo docker rm -f {{image}} 2>/dev/null
     -[ -f /tmp/warp-proxy-local.pid ] && kill "$(cat /tmp/warp-proxy-local.pid)" 2>/dev/null; rm -f /tmp/warp-proxy-local.pid
