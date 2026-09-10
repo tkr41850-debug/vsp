@@ -626,7 +626,8 @@ async def serve_debug_config(writer):
         "env": {k: os.environ.get(k, "") for k in CONFIG_ENV_KEYS},
         "pool": {"num_warps": NUM_WARPS, "hold_timeout": HOLD_TIMEOUT,
                  "reg_interval_sec": REG_INTERVAL_SEC, "initial_burst": INITIAL_BURST,
-                 "protocol": WARP_PROTOCOL, "masque": WARP_MASQUE or "default"},
+                 "protocol": WARP_PROTOCOL, "masque": WARP_MASQUE or "default",
+                 "send_chunk": SEND_CHUNK, "fetch_hello": FETCH_HELLO},
         "build": {"warp_cli": version, "python": _platform.python_version()},
         "secrets": {"proxy_token_set": bool(PROXY_TOKEN), "debug_key_set": True},
     }).encode()
