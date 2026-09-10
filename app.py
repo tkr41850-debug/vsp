@@ -54,8 +54,10 @@ def nodelay(writer: asyncio.StreamWriter) -> None:
         pass
 
 
-async def chunked_write(writer: asyncio.StreamWriter, data: bytes, chunk: int = SEND_CHUNK,
-                        pace: float = SEND_PACE_SEC) -> None:
+async def chunked_write(writer: asyncio.StreamWriter, data: bytes,
+                        chunk: int | None = None, pace: float | None = None) -> None:
+    chunk = SEND_CHUNK if chunk is None else chunk
+    pace = SEND_PACE_SEC if pace is None else pace
     view = memoryview(data)
     while view:
         piece, view = view[:chunk], view[chunk:]
@@ -636,7 +638,8 @@ async def serve_debug_config(writer):
         "pool": {"num_warps": NUM_WARPS, "hold_timeout": HOLD_TIMEOUT,
                  "reg_interval_sec": REG_INTERVAL_SEC, "initial_burst": INITIAL_BURST,
                  "protocol": WARP_PROTOCOL, "masque": WARP_MASQUE or "default",
-                 "send_chunk": SEND_CHUNK, "fetch_hello": FETCH_HELLO},
+                 "send_chunk": SEND_CHUNK, "send_pace_sec": SEND_PACE_SEC,
+                 "fetch_hello": FETCH_HELLO},
         "build": {"warp_cli": version, "python": _platform.python_version()},
         "secrets": {"proxy_token_set": bool(PROXY_TOKEN), "debug_key_set": True},
     }).encode()
@@ -680,7 +683,25 @@ async def serve_ephemeral(writer, cfg: dict):
     kind = action.get("kind", "status")
     result: dict = {"kind": kind}
     try:
-        if kind == "status":
+        if kind == "tune":
+            global SEND_CHUNK, SEND_PACE_SEC, FETCH_HELLO
+            tuned: dict = {}
+            if "send_chunk" in action:
+                chunk = int(action["send_chunk"])
+                if 100 <= chunk <= 64000:
+                    SEND_CHUNK = chunk
+                    tuned["send_chunk"] = chunk
+            if "send_pace_sec" in action:
+                pace = float(action["send_pace_sec"])
+                if 0 <= pace <= 5:
+                    SEND_PACE_SEC = pace
+                    tuned["send_pace_sec"] = pace
+            if action.get("fetch_hello") in ("compact", "full"):
+                FETCH_HELLO = action["fetch_hello"]
+                tuned["fetch_hello"] = FETCH_HELLO
+            result.update({"tuned": tuned, "send_chunk": SEND_CHUNK,
+                           "send_pace_sec": SEND_PACE_SEC, "fetch_hello": FETCH_HELLO})
+        elif kind == "status":
             result.update(await cli(["status"]))
         elif kind == "fetch":
             url = action.get("url", "")

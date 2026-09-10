@@ -619,3 +619,32 @@ def test_chunked_write_paces():
         await warp_app.chunked_write(w2, b"z" * 400, chunk=500, pace=0.2)
         assert [len(c) for c in w2.chunks] == [400]
     asyncio.run(_go())
+
+
+def test_ephemeral_tune(monkeypatch, tmp_path):
+    monkeypatch.setattr(warp_app, "DATA_ROOT", tmp_path)
+    old_chunk, old_pace, old_hello = warp_app.SEND_CHUNK, warp_app.SEND_PACE_SEC, warp_app.FETCH_HELLO
+
+    async def _go():
+        srv = await asyncio.start_server(warp_app.handle_client, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        old = warp_app.DEBUG_CLI
+        warp_app.DEBUG_CLI = True
+        hdr = f"X-Debug-Key: {warp_app.get_debug_key()}\r\n"
+        try:
+            st, res = await _debug_post(
+                port, {"ephemeral": {"instance": 1, "action": {"kind": "tune", "send_chunk": 64,
+                                                              "send_pace_sec": 9, "fetch_hello": "bogus"}}}, hdr)
+            assert st == 200
+            assert res["action"]["tuned"] == {}
+            st, res = await _debug_post(
+                port, {"ephemeral": {"instance": 1, "action": {"kind": "tune", "send_chunk": 750,
+                                                              "send_pace_sec": 0.1, "fetch_hello": "full"}}}, hdr)
+            assert st == 200
+            assert res["action"]["tuned"] == {"send_chunk": 750, "send_pace_sec": 0.1, "fetch_hello": "full"}
+            assert (warp_app.SEND_CHUNK, warp_app.SEND_PACE_SEC, warp_app.FETCH_HELLO) == (750, 0.1, "full")
+        finally:
+            srv.close()
+            warp_app.DEBUG_CLI = old
+            warp_app.SEND_CHUNK, warp_app.SEND_PACE_SEC, warp_app.FETCH_HELLO = old_chunk, old_pace, old_hello
+    asyncio.run(_go())
