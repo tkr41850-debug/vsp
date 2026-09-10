@@ -95,7 +95,8 @@ Without `DEBUG=1` the endpoint is 404; with a wrong key it's 403. Turn it off
 default: `setup` (list of warp-cli arg lists), then one `action`, then `teardown`,
 then `disconnect` unless `"leave": true`. Action kinds: `status`, `fetch`
 (`url`, `method`, `headers`, `body_b64` through that instance's SOCKS), `sleep`
-(`seconds`, lets you poll `status` between calls):
+(`seconds`, lets you poll `status` between calls), `tune` (`send_chunk`,
+`send_pace_sec`, `fetch_hello` — hot-tunes upstream pacing without restart):
 
 ```
 curl -X POST https://<pool>/debug/cli -H "X-Debug-Key: $KEY" \
