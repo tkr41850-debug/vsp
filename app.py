@@ -127,19 +127,26 @@ async def socks5_connect(reader_host_port: tuple, host: str, port: int):
         await r.readexactly(18)
     return r, w
 
-def parse_status_output(out: str) -> str:
+def parse_status_output(out: str) -> tuple[str, str]:
+    status, reason = "unknown", ""
     for line in out.splitlines():
-        if "status update" in line.lower():
-            return line.split(":", 1)[1].strip()[:60] if ":" in line else line.strip()[:60]
-    first = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
-    return first[:60] if first else "unknown"
+        low = line.lower()
+        if "status update" in low:
+            status = line.split(":", 1)[1].strip()[:60] if ":" in line else line.strip()[:60]
+        elif low.startswith("reason:"):
+            reason = line.split(":", 1)[1].strip()[:120]
+    if status == "unknown":
+        first = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
+        status = first[:60] if first else "unknown"
+    return status, reason
 
 
-async def warp_statuses() -> dict[int, str]:
+async def warp_statuses() -> dict[int, dict[str, str]]:
     loop = asyncio.get_running_loop()
-    def _one(i: int) -> str:
+    def _one(i: int) -> dict[str, str]:
         _, out = run_cli(i, "status", timeout=5)
-        return parse_status_output(out)
+        status, reason = parse_status_output(out)
+        return {"status": status, "reason": reason}
     results = await asyncio.gather(
         *[loop.run_in_executor(None, _one, w.idx) for w in manager.instances])
     return {w.idx: s for w, s in zip(manager.instances, results)}
@@ -388,7 +395,9 @@ async def serve_manager_api(writer: asyncio.StreamWriter, method: str, path: str
         payload = {
             "active": manager.active,
             "warps": [
-                {"idx": w.idx, "ready": w.ready, "status": statuses.get(w.idx, "unknown"),
+                {"idx": w.idx, "ready": w.ready,
+                 "status": statuses.get(w.idx, {}).get("status", "unknown"),
+                 "reason": statuses.get(w.idx, {}).get("reason", ""),
                  "socks": w.socks_port, "registered": w.has_registration(),
                  "error": w.last_error[-200:]}
                 for w in manager.instances

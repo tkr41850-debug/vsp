@@ -288,7 +288,7 @@ def test_edge_read_full_chunked():
 
 
 def test_parse_status_output():
-    assert warp_app.parse_status_output("Status update: Connected\nReason: ok") == "Connected"
-    assert warp_app.parse_status_output("Status update: Disconnected\nReason: Manual") == "Disconnected"
-    assert warp_app.parse_status_output("Unable to connect to the daemon: nope") == "Unable to connect to the daemon: nope"
-    assert warp_app.parse_status_output("") == "unknown"
+    assert warp_app.parse_status_output("Status update: Connected\nReason: ok") == ("Connected", "ok")
+    assert warp_app.parse_status_output("Status update: Disconnected\nReason: Manual Disconnection") == ("Disconnected", "Manual Disconnection")
+    assert warp_app.parse_status_output("Unable to connect to the daemon: nope") == ("Unable to connect to the daemon: nope", "")
+    assert warp_app.parse_status_output("") == ("unknown", "")
