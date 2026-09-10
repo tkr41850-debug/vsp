@@ -44,21 +44,4 @@ logs:
 # Host-local run: loopback-only proxy + per-instance warp-svc.
 # Never touches the system warp-svc (/run/cloudflare-warp); proxy mode only.
 local:
-    mkdir -p {{data}}
-    for i in $(seq 1 {{warps}}); do
-    sudo mkdir -p "$PWD/{{data}}/warp$i" "/run/warp$i" "/var/log/warp$i"
-    if [ ! -S "/run/warp$i/warp_service" ]; then
-    echo "starting warp-svc #$i ..."
-    nohup sudo env STATE_DIRECTORY="$PWD/{{data}}/warp$i" RUNTIME_DIRECTORY="/run/warp$i" LOGS_DIRECTORY="/var/log/warp$i" /bin/warp-svc >"$PWD/{{data}}/warp$i/svc.stdout.log" 2>&1 &
-    fi
-    done
-    for i in $(seq 1 {{warps}}); do
-    for _ in $(seq 1 50); do [ -S "/run/warp$i/warp_service" ] && break; sleep 0.2; done
-    RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos mode proxy >/dev/null 2>&1 || true
-    RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos proxy port $((40000 + i)) >/dev/null 2>&1 || true
-    RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos tunnel protocol set MASQUE >/dev/null 2>&1 || true
-    RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos tunnel masque-options set h2-only >/dev/null 2>&1 || true
-    echo "warp$i socket: $(ls -l /run/warp$i/warp_service 2>&1)"
-    done
-    export WARP_DATA_ROOT="$PWD/{{data}}" LISTEN_HOST=127.0.0.1 PROXY_PORT={{port}} HOLD_TIMEOUT=10 NUM_WARPS={{warps}}
-    exec python3 app.py
+    PROXY_PORT={{port}} NUM_WARPS={{warps}} WARP_DATA_ROOT="$PWD/{{data}}" bash scripts/local.sh
