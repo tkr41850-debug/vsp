@@ -65,6 +65,9 @@ probe-tls:
 probe-sizes:
     @python3 scripts/probe_sizes.py --base "${VSP_API_BASE:-https://pool.example.invalid}"
 
+probe-debug:
+    @VSP_API_BASE="${VSP_API_BASE:-https://pool.example.invalid}" python3 scripts/probe_debug.py
+
 via-proxy:
     curl -s --max-time 25 -x http://127.0.0.1:{{port}} -L ipconfig.me; echo
 

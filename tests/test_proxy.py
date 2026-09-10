@@ -313,11 +313,13 @@ def _debug_key_header() -> str:
 
 
 def test_debug_cli(monkeypatch, tmp_path):
-    import shutil as _sh
-    if _sh.which("warp-cli") is None:
-        import pytest as _pt
-        _pt.skip("warp-cli not installed")
+    import subprocess as _sp
     monkeypatch.setattr(warp_app, "DATA_ROOT", tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[0] == "warp-cli"
+        return _sp.CompletedProcess(cmd, 0, stdout="warp-cli 2026.0-test\n", stderr="")
+    monkeypatch.setattr(_sp, "run", fake_run)
     hdr = f"X-Debug-Key: {warp_app.get_debug_key()}\r\n"
 
     async def _go():
