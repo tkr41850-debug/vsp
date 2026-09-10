@@ -14,9 +14,14 @@ LISTEN_PORT = int(os.environ.get("PROXY_PORT", "8080"))
 NUM_WARPS = int(os.environ.get("NUM_WARPS", "8"))
 HOLD_TIMEOUT = float(os.environ.get("HOLD_TIMEOUT", "10"))
 BASE_SOCKS_PORT = int(os.environ.get("BASE_SOCKS_PORT", "40001"))
-REG_INTERVAL_SEC = int(os.environ.get("REG_INTERVAL_SEC", "3600"))
-INITIAL_BURST = int(os.environ.get("INITIAL_BURST", "2"))
+REG_INTERVAL_SEC = int(os.environ.get("REG_INTERVAL_SEC", "28800"))
+INITIAL_BURST = int(os.environ.get("INITIAL_BURST", "1"))
 BOOT_RETRY_SEC = int(os.environ.get("BOOT_RETRY_SEC", "300"))
+STATUS_CACHE_SEC = int(os.environ.get("STATUS_CACHE_SEC", "30"))
+WARP_PROTOCOL = os.environ.get("WARP_PROTOCOL") or "WireGuard"
+WARP_MASQUE = os.environ.get("WARP_MASQUE") or ""
+last_reg_ts: float = -REG_INTERVAL_SEC
+status_cache: dict[int, dict[str, str]] = {}
 PROXY_TOKEN = os.environ.get("PROXY_TOKEN", "")
 MAX_FETCH_BYTES = 10 * 1024 * 1024
 DEBUG_CLI = os.environ.get("DEBUG", "") == "1"
@@ -96,9 +101,70 @@ class WarpInstance:
     def has_registration(self) -> bool:
         return (self.state_dir / "reg.json").exists()
 
+_daemons: dict[int, asyncio.subprocess.Process] = {}
+
+
+def budget_wait() -> float:
+    return max(0.0, REG_INTERVAL_SEC - (time.monotonic() - last_reg_ts))
+
+
+def mark_reg() -> None:
+    global last_reg_ts
+    last_reg_ts = time.monotonic()
+
+
+async def ensure_daemon(inst: WarpInstance, timeout: float = 30) -> bool:
+    sock = Path(f"/run/warp{inst.idx}") / "warp_service"
+    if sock.exists():
+        proc = _daemons.get(inst.idx)
+        if proc is None or proc.returncode is None:
+            return True
+    for d in (inst.state_dir, Path(f"/run/warp{inst.idx}"), Path(f"/var/log/warp{inst.idx}")):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            import subprocess as _sp
+            try:
+                _sp.run(["sudo", "-n", "mkdir", "-p", str(d)],
+                        capture_output=True, timeout=10, check=True)
+            except Exception as exc:
+                log.warning("cannot create %s: %s (needs root or pre-created dirs)", d, exc)
+                return False
+    cmd = ["/bin/warp-svc"]
+    if os.geteuid() != 0:
+        cmd = ["sudo", "-n", *cmd]
+    env = warp_env(inst.idx)
+    log_path = Path(f"/var/log/warp{inst.idx}") / "svc.stdout.log"
+    try:
+        logf = open(log_path, "ab")
+    except OSError:
+        logf = open(DATA_ROOT / f"warp{inst.idx}-svc.stdout.log", "ab")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, env=env, stdin=asyncio.subprocess.DEVNULL,
+            stdout=logf, stderr=asyncio.subprocess.STDOUT)
+    except Exception as exc:
+        log.warning("cannot spawn warp-svc #%s: %s", inst.idx, exc)
+        return False
+    _daemons[inst.idx] = proc
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
+        if proc.returncode is not None:
+            log.warning("warp-svc #%s exited early", inst.idx)
+            return False
+        if sock.exists():
+            return True
+        await asyncio.sleep(0.5)
+    log.warning("warp-svc #%s no socket after %ss", inst.idx, timeout)
+    return False
+
+
 async def ensure_proxy_mode(inst: WarpInstance) -> None:
     loop = asyncio.get_running_loop()
     def _do():
+        run_cli(inst.idx, "tunnel", "protocol", "set", WARP_PROTOCOL)
+        if WARP_MASQUE:
+            run_cli(inst.idx, "tunnel", "masque-options", "set", WARP_MASQUE)
         run_cli(inst.idx, "mode", "proxy")
         run_cli(inst.idx, "proxy", "port", str(inst.socks_port))
         return run_cli(inst.idx, "--accept-tos", "connect")
@@ -424,7 +490,7 @@ async def relay(a_r, a_w, b_r, b_w):
 
 async def serve_manager_api(writer: asyncio.StreamWriter, method: str, path: str, body: bytes):
     if method == "GET" and path in ("/health", "/healthz"):
-        statuses = await warp_statuses()
+        statuses = status_cache
         payload = {
             "active": manager.active,
             "warps": [
@@ -723,9 +789,12 @@ async def registration_scheduler():
             registered_now.add(w.idx)
     need_initial = [w for w in manager.instances[:INITIAL_BURST] if w.idx not in registered_now]
     for w in need_initial:
+        if not await ensure_daemon(w):
+            continue
         ok = await register_one(w)
         if ok:
             registered_now.add(w.idx)
+            mark_reg()
             manager.instances[w.idx - 1].ready = await poll_until_connected(w, timeout=45)
     if manager.healthy():
         manager.ready_event.set()
@@ -742,16 +811,19 @@ async def registration_scheduler():
                     asyncio.create_task(boot_one(w))
     asyncio.create_task(retry_unready())
     while len(registered_now) < NUM_WARPS:
-        await asyncio.sleep(REG_INTERVAL_SEC)
+        await asyncio.sleep(budget_wait() or REG_INTERVAL_SEC)
         nxt = next((w for w in manager.instances if w.idx not in registered_now), None)
         if nxt is None:
             break
+        if not await ensure_daemon(nxt):
+            continue
         ok = await register_one(nxt)
         if ok:
             registered_now.add(nxt.idx)
+            mark_reg()
             asyncio.create_task(boot_one(nxt))
         else:
-            log.warning("registration failed idx=%s err=%s; retry next hour", nxt.idx, nxt.last_error)
+            log.warning("registration failed idx=%s err=%s; retry next cycle", nxt.idx, nxt.last_error)
 
 async def register_one(w: WarpInstance) -> bool:
     loop = asyncio.get_running_loop()
@@ -773,6 +845,9 @@ async def heal_stale(w: WarpInstance) -> bool:
     now = time.monotonic()
     if now - w.last_heal < HEAL_COOLDOWN_SEC:
         return False
+    if budget_wait() > 0:
+        log.info("heal deferred idx=%s: registration budget spent", w.idx)
+        return False
     loop = asyncio.get_running_loop()
     def _do():
         run_cli(w.idx, "registration", "delete")
@@ -782,6 +857,7 @@ async def heal_stale(w: WarpInstance) -> bool:
     w.last_heal = now
     w.fail_count = 0
     if rc == 0 or w.has_registration():
+        mark_reg()
         log.info("healed stale warp idx=%s", w.idx)
         return True
     log.warning("heal failed idx=%s", w.idx)
@@ -793,6 +869,11 @@ def _sibling_healthy(w: WarpInstance) -> bool:
 
 
 async def boot_one(w: WarpInstance):
+    if not await ensure_daemon(w):
+        w.last_error = "daemon not running"
+        w.ready = False
+        w.fail_count += 1
+        return
     await ensure_proxy_mode(w)
     ok = await poll_until_connected(w, timeout=120)
     w.ready = ok
@@ -809,6 +890,25 @@ async def boot_one(w: WarpInstance):
         w.ready = ok
         if ok and manager.healthy():
             manager.ready_event.set()
+        return
+    w.fail_count += 1
+    if (w.has_registration() and w.fail_count >= STALE_FAIL_THRESHOLD
+            and _sibling_healthy(w) and await heal_stale(w)):
+        await ensure_proxy_mode(w)
+        ok = await poll_until_connected(w, timeout=120)
+        w.ready = ok
+        if ok and manager.healthy():
+            manager.ready_event.set()
+
+async def status_refresher():
+    while True:
+        try:
+            for idx, entry in (await warp_statuses()).items():
+                status_cache[idx] = entry
+        except Exception as exc:
+            log.warning("status refresh failed: %r", exc)
+        await asyncio.sleep(STATUS_CACHE_SEC)
+
 
 async def main():
     for i in range(1, NUM_WARPS + 1):
@@ -816,6 +916,7 @@ async def main():
     if DEBUG_CLI:
         get_debug_key()
         log.info("debug cli enabled, key at %s", DATA_ROOT / DEBUG_KEY_FILE)
+    asyncio.create_task(status_refresher())
     asyncio.create_task(registration_scheduler())
     server = await asyncio.start_server(handle_client, LISTEN_HOST, LISTEN_PORT)
     log.info("warp forward-proxy on %s:%s hold=%ss warps=%s", LISTEN_HOST, LISTEN_PORT, HOLD_TIMEOUT, NUM_WARPS)
