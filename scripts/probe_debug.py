@@ -42,7 +42,25 @@ def main(instance: int) -> int:
         return 1
     st, res = call({"instance": instance, "args": ["status"]})
     print(f"status: http={st} {res.get('stdout', '').strip().replace(chr(10), ' | ')[:160]}")
-    return 0 if st == 200 else 1
+    if st != 200:
+        return 1
+    body = json.dumps({}).encode()
+    req = urllib.request.Request(
+        f"{BASE}/debug/config",
+        headers={"User-Agent": "probe-debug/1.0", "X-Debug-Key": KEY},
+        method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as res:
+            d = json.load(res)
+        env = d.get("env", {})
+        watched = {k: env.get(k, "") for k in
+                   ("WARP_PROTOCOL", "WARP_MASQUE", "WARP_NET_MTU", "NUM_WARPS",
+                    "REG_INTERVAL_SEC", "DEBUG") if k in env}
+        print(f"config: {watched} warp_cli={d.get('build', {}).get('warp_cli', '?')}")
+    except Exception as exc:
+        print(f"config: FAILED {str(exc)[:80]}")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
