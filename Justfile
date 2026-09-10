@@ -50,7 +50,7 @@ rotate:
 
 # Pool snapshot (any pool): VSP_API_BASE=https://<pool-host> just pool
 pool:
-    VSP_API_BASE="${VSP_API_BASE:-https://pool.example.invalid}" bash scripts/pool.sh
+    @VSP_API_BASE="${VSP_API_BASE:-https://pool.example.invalid}" bash scripts/pool.sh
 
 via-proxy:
     curl -s --max-time 25 -x http://127.0.0.1:{{port}} -L ipconfig.me; echo
