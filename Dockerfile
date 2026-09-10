@@ -10,7 +10,7 @@ RUN curl -fsSl https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor
  && rm -rf /var/lib/apt/lists/*
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
-COPY app.py /app/app.py
+COPY app.py wscodec.py /app/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 EXPOSE 8080
