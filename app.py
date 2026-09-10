@@ -46,6 +46,10 @@ def run_cli(i: int, *args: str, timeout: int = 20) -> tuple[int, str]:
     except Exception as exc:
         return 1, str(exc)
 
+STALE_FAIL_THRESHOLD = int(os.environ.get("STALE_FAIL_THRESHOLD", "3"))
+HEAL_COOLDOWN_SEC = int(os.environ.get("HEAL_COOLDOWN_SEC", "3600"))
+
+
 @dataclass
 class WarpInstance:
     idx: int
@@ -53,6 +57,8 @@ class WarpInstance:
     ready: bool = False
     last_error: str = ""
     registration_id: str = ""
+    fail_count: int = 0
+    last_heal: float = 0.0
 
     @property
     def runtime_dir(self) -> Path:
@@ -733,12 +739,46 @@ async def register_one(w: WarpInstance) -> bool:
     w.last_error = out[:300]
     log.warning("register failed idx=%s: %s", w.idx, out[:300])
     return "already" in low
+async def heal_stale(w: WarpInstance) -> bool:
+    now = time.monotonic()
+    if now - w.last_heal < HEAL_COOLDOWN_SEC:
+        return False
+    loop = asyncio.get_running_loop()
+    def _do():
+        run_cli(w.idx, "registration", "delete")
+        rc, _ = run_cli(w.idx, "--accept-tos", "registration", "new", timeout=60)
+        return rc
+    rc = await loop.run_in_executor(None, _do)
+    w.last_heal = now
+    w.fail_count = 0
+    if rc == 0 or w.has_registration():
+        log.info("healed stale warp idx=%s", w.idx)
+        return True
+    log.warning("heal failed idx=%s", w.idx)
+    return False
+
+
+def _sibling_healthy(w: WarpInstance) -> bool:
+    return any(o.ready for o in manager.instances if o.idx != w.idx)
+
+
 async def boot_one(w: WarpInstance):
     await ensure_proxy_mode(w)
     ok = await poll_until_connected(w, timeout=120)
     w.ready = ok
-    if ok and manager.healthy():
-        manager.ready_event.set()
+    if ok:
+        w.fail_count = 0
+        if manager.healthy():
+            manager.ready_event.set()
+        return
+    w.fail_count += 1
+    if (w.has_registration() and w.fail_count >= STALE_FAIL_THRESHOLD
+            and _sibling_healthy(w) and await heal_stale(w)):
+        await ensure_proxy_mode(w)
+        ok = await poll_until_connected(w, timeout=120)
+        w.ready = ok
+        if ok and manager.healthy():
+            manager.ready_event.set()
 
 async def main():
     for i in range(1, NUM_WARPS + 1):

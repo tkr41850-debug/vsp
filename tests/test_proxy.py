@@ -342,3 +342,55 @@ def test_debug_cli():
         finally:
             warp_app.DEBUG_CLI = old
     asyncio.run(_go())
+
+
+def test_stale_heal_only_with_healthy_sibling(monkeypatch):
+    async def _go():
+        calls = []
+        def fake_cli(i, *a, **k):
+            calls.append((i, a))
+            if a[-2:] == ("registration", "new"):
+                return (0, "Success")
+            if a[-2:] == ("registration", "delete"):
+                return (0, "Success")
+            if a[-1:] == ("status",):
+                return (0, "Status update: Connected")
+            return (0, "Success")
+        monkeypatch.setattr(warp_app, "run_cli", fake_cli)
+        monkeypatch.setattr(warp_app, "poll_until_connected", lambda inst, timeout=60: _false())
+        async def _false():
+            return False
+        old_manager = warp_app.manager
+        try:
+            sib = warp_app.WarpInstance(idx=2, socks_port=40002, ready=True)
+            w = warp_app.WarpInstance(idx=1, socks_port=40001, ready=False, fail_count=2)
+            w.has_registration = lambda: True
+            warp_app.manager = warp_app.Manager(instances=[w, sib])
+            await warp_app.boot_one(w)
+            assert any(c[1][-2:] == ("registration", "delete") for c in calls), calls
+        finally:
+            warp_app.manager = old_manager
+    asyncio.run(_go())
+
+
+def test_no_heal_when_all_down(monkeypatch):
+    async def _go():
+        calls = []
+        def fake_cli(i, *a, **k):
+            calls.append((i, a))
+            return (0, "Status update: Disconnected")
+        monkeypatch.setattr(warp_app, "run_cli", fake_cli)
+        async def _false(inst, timeout=60):
+            return False
+        monkeypatch.setattr(warp_app, "poll_until_connected", _false)
+        old_manager = warp_app.manager
+        try:
+            w = warp_app.WarpInstance(idx=1, socks_port=40001, ready=False, fail_count=5)
+            w.has_registration = lambda: True
+            o = warp_app.WarpInstance(idx=2, socks_port=40002, ready=False)
+            warp_app.manager = warp_app.Manager(instances=[w, o])
+            await warp_app.boot_one(w)
+            assert not any(c[1][-2:] == ("registration", "delete") for c in calls), calls
+        finally:
+            warp_app.manager = old_manager
+    asyncio.run(_go())
