@@ -554,3 +554,32 @@ def test_debug_config(monkeypatch, tmp_path):
             srv.close()
             warp_app.DEBUG_CLI = old
     asyncio.run(_go())
+
+
+def test_chunked_write_splits():
+    class FakeW:
+        def __init__(self):
+            self.chunks = []
+        def write(self, data):
+            self.chunks.append(bytes(data))
+        async def drain(self):
+            pass
+    async def _go():
+        w = FakeW()
+        await warp_app.chunked_write(w, b"z" * 2500, chunk=1000)
+        assert [len(c) for c in w.chunks] == [1000, 1000, 500]
+        assert b"".join(w.chunks) == b"z" * 2500
+    asyncio.run(_go())
+
+
+def test_compact_hello_small(monkeypatch):
+    import ssl as _ssl
+    monkeypatch.setattr(warp_app, "FETCH_HELLO", "compact")
+    ctx = warp_app.tls_context()
+    bi, bo = _ssl.MemoryBIO(), _ssl.MemoryBIO()
+    tls = ctx.wrap_bio(bi, bo, server_hostname="example.com")
+    try:
+        tls.do_handshake()
+    except _ssl.SSLWantReadError:
+        pass
+    assert len(bo.read()) < 800

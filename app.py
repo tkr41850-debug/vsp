@@ -25,6 +25,30 @@ status_cache: dict[int, dict[str, str]] = {}
 PROXY_TOKEN = os.environ.get("PROXY_TOKEN", "")
 MAX_FETCH_BYTES = 10 * 1024 * 1024
 DEBUG_CLI = os.environ.get("DEBUG", "") == "1"
+SEND_CHUNK = int(os.environ.get("SEND_CHUNK", "1000"))
+FETCH_HELLO = os.environ.get("FETCH_HELLO", "compact")
+
+
+def tls_context(server_hostname: str | None = None) -> object:
+    import ssl as _ssl
+    ctx = _ssl.create_default_context()
+    if FETCH_HELLO == "compact":
+        ctx.maximum_version = _ssl.TLSVersion.TLSv1_2
+        ctx.set_ciphers("ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384")
+        ctx.options |= _ssl.OP_NO_TICKET | _ssl.OP_NO_COMPRESSION
+        try:
+            ctx.set_alpn_protocols([])
+        except Exception:
+            pass
+    return ctx
+
+
+async def chunked_write(writer: asyncio.StreamWriter, data: bytes, chunk: int = SEND_CHUNK) -> None:
+    view = memoryview(data)
+    while view:
+        writer.write(bytes(view[:chunk]))
+        await writer.drain()
+        view = view[chunk:]
 DEBUG_KEY_FILE = "debug.key"
 
 
@@ -306,8 +330,7 @@ def fetch_blocking(socks_port: int, method: str, url: str,
         elif at == 4:
             _recvn(s, 18)
         if u.scheme == "https":
-            ctx = _ssl.create_default_context()
-            s = ctx.wrap_socket(s, server_hostname=host)
+            s = tls_context().wrap_socket(s, server_hostname=host)
         path = u.path or "/"
         if u.query:
             path += "?" + u.query
@@ -461,14 +484,17 @@ def parse_target(request_line: str, headers: dict) -> tuple[str, int, str] | Non
     return host, int(port_s or 80), request_line
 
 async def relay(a_r, a_w, b_r, b_w):
-    async def _copy(r, w):
+    async def _copy(r, w, chunked: bool):
         try:
             while True:
                 data = await r.read(65536)
                 if not data:
                     break
-                w.write(data)
-                await w.drain()
+                if chunked:
+                    await chunked_write(w, data)
+                else:
+                    w.write(data)
+                    await w.drain()
         except Exception:
             pass
         try:
@@ -476,8 +502,8 @@ async def relay(a_r, a_w, b_r, b_w):
         except Exception:
             pass
     try:
-        t1 = asyncio.ensure_future(_copy(a_r, b_w))
-        t2 = asyncio.ensure_future(_copy(b_r, a_w))
+        t1 = asyncio.ensure_future(_copy(a_r, b_w, True))
+        t2 = asyncio.ensure_future(_copy(b_r, a_w, False))
         _, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
             t.cancel()
@@ -794,8 +820,7 @@ async def handle_client(c_r: asyncio.StreamReader, c_w: asyncio.StreamWriter):
                         fr = await _ws.read_frame(c_r)
                         if fr is None:
                             break
-                        _sw.write(fr[1])
-                        await _sw.drain()
+                        await chunked_write(_sw, fr[1])
                 except Exception:
                     pass
             async def _tcp2ws():
