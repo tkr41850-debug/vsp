@@ -517,3 +517,40 @@ def test_ephemeral_validation(monkeypatch, tmp_path):
             srv.close()
             warp_app.DEBUG_CLI = old
     asyncio.run(_go())
+
+
+def test_debug_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(warp_app, "DATA_ROOT", tmp_path)
+    monkeypatch.setenv("PROXY_TOKEN", "super-secret-value")
+    monkeypatch.setattr(warp_app, "PROXY_TOKEN", "super-secret-value")
+    key = warp_app.get_debug_key()
+
+    async def _go():
+        srv = await asyncio.start_server(warp_app.handle_client, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        old = warp_app.DEBUG_CLI
+        warp_app.DEBUG_CLI = True
+        try:
+            r, w = await asyncio.open_connection("127.0.0.1", port)
+            w.write(b"GET /debug/config HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            await w.drain()
+            raw = await r.read()
+            w.close()
+            assert raw.split(b"\r\n", 1)[0].startswith(b"HTTP/1.1 403")
+            r, w = await asyncio.open_connection("127.0.0.1", port)
+            w.write(f"GET /debug/config HTTP/1.1\r\nHost: x\r\nX-Debug-Key: {key}\r\n"
+                    f"Connection: close\r\n\r\n".encode())
+            await w.drain()
+            raw = await r.read()
+            w.close()
+            body = raw.partition(b"\r\n\r\n")[2].decode()
+            assert "super-secret-value" not in body
+            assert key not in body
+            d = json.loads(body)
+            assert d["ok"] is True
+            assert d["secrets"] == {"proxy_token_set": True, "debug_key_set": True}
+            assert d["pool"]["num_warps"] == warp_app.NUM_WARPS
+        finally:
+            srv.close()
+            warp_app.DEBUG_CLI = old
+    asyncio.run(_go())

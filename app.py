@@ -558,6 +558,42 @@ async def serve_fetch(writer, method: str, headers: dict, query: str, body: byte
     await writer.drain()
 
 
+CONFIG_ENV_KEYS = (
+    "WARP_DATA_ROOT", "LISTEN_HOST", "PROXY_PORT", "NUM_WARPS", "HOLD_TIMEOUT",
+    "BASE_SOCKS_PORT", "REG_INTERVAL_SEC", "INITIAL_BURST", "BOOT_RETRY_SEC",
+    "STATUS_CACHE_SEC", "STALE_FAIL_THRESHOLD", "HEAL_COOLDOWN_SEC",
+    "WARP_PROTOCOL", "WARP_MASQUE", "WARP_NET_MTU", "DEBUG", "EDGE_PORT",
+    "POOL_BASE", "VSP_API_BASE",
+)
+
+
+async def serve_debug_config(writer):
+    import platform as _platform
+    loop = asyncio.get_running_loop()
+
+    def _warp_version():
+        import subprocess as _sp
+        try:
+            p = _sp.run(["warp-cli", "--accept-tos", "--version"],
+                        capture_output=True, text=True, timeout=10)
+            return (p.stdout + p.stderr).strip()[:80]
+        except Exception as exc:
+            return f"unavailable: {exc}"[:80]
+
+    version = await loop.run_in_executor(None, _warp_version)
+    payload = json.dumps({
+        "ok": True,
+        "env": {k: os.environ.get(k, "") for k in CONFIG_ENV_KEYS},
+        "pool": {"num_warps": NUM_WARPS, "hold_timeout": HOLD_TIMEOUT,
+                 "reg_interval_sec": REG_INTERVAL_SEC, "initial_burst": INITIAL_BURST,
+                 "protocol": WARP_PROTOCOL, "masque": WARP_MASQUE or "default"},
+        "build": {"warp_cli": version, "python": _platform.python_version()},
+        "secrets": {"proxy_token_set": bool(PROXY_TOKEN), "debug_key_set": True},
+    }).encode()
+    writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+    await writer.drain()
+
+
 async def serve_ephemeral(writer, cfg: dict):
     import base64 as _b64
     try:
@@ -783,6 +819,20 @@ async def handle_client(c_r: asyncio.StreamReader, c_w: asyncio.StreamWriter):
                     _sw.close()
                 except Exception:
                     pass
+            c_w.close()
+            return
+        if _path == "/debug/config":
+            if not DEBUG_CLI:
+                c_w.write(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+                await c_w.drain()
+                c_w.close()
+                return
+            if not check_debug_key(headers):
+                c_w.write(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+                await c_w.drain()
+                c_w.close()
+                return
+            await serve_debug_config(c_w)
             c_w.close()
             return
         if _path == "/debug/cli":
