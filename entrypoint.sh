@@ -23,9 +23,7 @@ for i in $(seq 1 "$NUM_WARPS"); do
   echo "warp$i socket: $(ls -l /run/warp$i/warp_service 2>&1)"
   RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos mode proxy >/dev/null 2>&1 || true
   RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos proxy port $((40000 + i)) >/dev/null 2>&1 || true
-  if [ -n "${WARP_PROTOCOL:-}" ]; then
-    RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos tunnel protocol set "$WARP_PROTOCOL" >/dev/null 2>&1 || true
-  fi
+  RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos tunnel protocol set "${WARP_PROTOCOL:-WireGuard}" >/dev/null 2>&1 || true
   if [ -n "${WARP_MASQUE:-}" ]; then
     RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos tunnel masque-options set "$WARP_MASQUE" >/dev/null 2>&1 || true
   fi
