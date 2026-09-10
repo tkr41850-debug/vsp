@@ -127,6 +127,24 @@ async def socks5_connect(reader_host_port: tuple, host: str, port: int):
         await r.readexactly(18)
     return r, w
 
+def parse_status_output(out: str) -> str:
+    for line in out.splitlines():
+        if "status update" in line.lower():
+            return line.split(":", 1)[1].strip()[:60] if ":" in line else line.strip()[:60]
+    first = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
+    return first[:60] if first else "unknown"
+
+
+async def warp_statuses() -> dict[int, str]:
+    loop = asyncio.get_running_loop()
+    def _one(i: int) -> str:
+        _, out = run_cli(i, "status", timeout=5)
+        return parse_status_output(out)
+    results = await asyncio.gather(
+        *[loop.run_in_executor(None, _one, w.idx) for w in manager.instances])
+    return {w.idx: s for w, s in zip(manager.instances, results)}
+
+
 def check_token(headers: dict, query: str) -> bool:
     if not PROXY_TOKEN:
         return True
@@ -366,11 +384,13 @@ async def relay(a_r, a_w, b_r, b_w):
 
 async def serve_manager_api(writer: asyncio.StreamWriter, method: str, path: str, body: bytes):
     if method == "GET" and path in ("/health", "/healthz"):
+        statuses = await warp_statuses()
         payload = {
             "active": manager.active,
             "warps": [
-                {"idx": w.idx, "ready": w.ready, "socks": w.socks_port,
-                 "registered": w.has_registration(), "error": w.last_error[-200:]}
+                {"idx": w.idx, "ready": w.ready, "status": statuses.get(w.idx, "unknown"),
+                 "socks": w.socks_port, "registered": w.has_registration(),
+                 "error": w.last_error[-200:]}
                 for w in manager.instances
             ],
         }
