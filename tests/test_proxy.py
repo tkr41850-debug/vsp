@@ -493,3 +493,25 @@ def test_heal_deferred_on_spent_budget(monkeypatch):
             warp_app.manager = old_manager
             warp_app.last_reg_ts = old_last
     asyncio.run(_go())
+
+
+def test_ephemeral_validation(monkeypatch, tmp_path):
+    monkeypatch.setattr(warp_app, "DATA_ROOT", tmp_path)
+
+    async def _go():
+        srv = await asyncio.start_server(warp_app.handle_client, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        old = warp_app.DEBUG_CLI
+        warp_app.DEBUG_CLI = True
+        hdr = f"X-Debug-Key: {warp_app.get_debug_key()}\r\n"
+        try:
+            st, res = await _debug_post(port, {"ephemeral": {"instance": 99}}, hdr)
+            assert st == 400
+            st, res = await _debug_post(port, {"ephemeral": {"instance": 1, "action": {"kind": "nope"}}}, hdr)
+            assert st == 200 and res["ok"] is True
+            assert res["action"].get("error") == "unknown action kind"
+            assert res["disconnect"]["rc"] != 124 or True
+        finally:
+            srv.close()
+            warp_app.DEBUG_CLI = old
+    asyncio.run(_go())

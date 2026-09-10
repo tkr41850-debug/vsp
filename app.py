@@ -558,6 +558,74 @@ async def serve_fetch(writer, method: str, headers: dict, query: str, body: byte
     await writer.drain()
 
 
+async def serve_ephemeral(writer, cfg: dict):
+    import base64 as _b64
+    try:
+        idx = int(cfg.get("instance", 1))
+    except (TypeError, ValueError):
+        idx = -1
+    if idx < 1 or idx > NUM_WARPS:
+        payload = json.dumps({"ok": False, "error": "bad instance"}).encode()
+        writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+        await writer.drain()
+        return
+    runtime_dir = f"/run/warp{idx}"
+    socks_port = BASE_SOCKS_PORT + idx - 1
+    loop = asyncio.get_running_loop()
+
+    async def cli(args) -> dict:
+        if not isinstance(args, list) or not args or not all(isinstance(a, str) for a in args):
+            return {"args": args, "rc": -1, "out": "", "err": "not a string list"}
+        def _do():
+            import subprocess as _sp
+            env = dict(os.environ)
+            env["RUNTIME_DIRECTORY"] = runtime_dir
+            try:
+                p = _sp.run(["warp-cli", "--accept-tos", *args], env=env,
+                            capture_output=True, text=True, timeout=30)
+                return p.returncode, p.stdout, p.stderr
+            except _sp.TimeoutExpired:
+                return 124, "", "timeout"
+        rc, out, err = await loop.run_in_executor(None, _do)
+        return {"args": args, "rc": rc, "out": out[-2000:], "err": err[-2000:]}
+
+    setup = [await cli(a) for a in (cfg.get("setup", []) or [])]
+    action = cfg.get("action", {"kind": "status"}) or {}
+    kind = action.get("kind", "status")
+    result: dict = {"kind": kind}
+    try:
+        if kind == "status":
+            result.update(await cli(["status"]))
+        elif kind == "fetch":
+            url = action.get("url", "")
+            method = action.get("method", "GET")
+            fwd = action.get("headers", {}) or {}
+            raw = action.get("body_b64", "")
+            import base64 as _b64m
+            fwd_body = _b64m.b64decode(raw) if raw else b""
+            def _fetch():
+                return fetch_blocking(socks_port, method, url, fwd, fwd_body, timeout=45)
+            status, rheaders, rbody = await loop.run_in_executor(None, _fetch)
+            result.update({"status": status, "headers": dict(list(rheaders.items())[:30]),
+                           "body_b64": _b64.b64encode(rbody).decode()})
+        elif kind == "sleep":
+            await asyncio.sleep(max(1, min(int(action.get("seconds", 10)), 120)))
+            result.update({"slept": True})
+        else:
+            result.update({"error": "unknown action kind"})
+    except Exception as exc:
+        result.update({"error": str(exc)[-300:]})
+    teardown = [await cli(a) for a in (cfg.get("teardown", []) or [])]
+    disc = None
+    if not cfg.get("leave"):
+        disc = await cli(["disconnect"])
+    payload = json.dumps({"ok": True, "instance": idx, "setup": setup,
+                          "action": result, "teardown": teardown,
+                          "disconnect": disc}).encode()
+    writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+    await writer.drain()
+
+
 async def serve_debug_cli(writer, body: bytes):
     import re as _re
     try:
@@ -587,6 +655,10 @@ async def serve_debug_cli(writer, body: bytes):
         payload = json.dumps({"ok": True, "lines": tail}).encode()
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
         await writer.drain()
+        return
+    if "ephemeral" in spec:
+        await serve_ephemeral(writer, spec.get("ephemeral", {}))
+        writer.close()
         return
     args = spec.get("args", [])
     if not isinstance(args, list) or not args or not all(isinstance(a, str) for a in args):
