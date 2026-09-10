@@ -26,4 +26,5 @@ for i in $(seq 1 "$NUM_WARPS"); do
   RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos tunnel protocol set MASQUE >/dev/null 2>&1 || true
   RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos tunnel masque-options set h2-only >/dev/null 2>&1 || true
 done
+export LISTEN_HOST="${LISTEN_HOST:-0.0.0.0}"
 exec python3 /app/app.py

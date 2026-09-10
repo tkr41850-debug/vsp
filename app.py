@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DATA_ROOT = Path(os.environ.get("WARP_DATA_ROOT", "/data"))
+LISTEN_HOST = os.environ.get("LISTEN_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("PROXY_PORT", "8080"))
 NUM_WARPS = int(os.environ.get("NUM_WARPS", "8"))
 HOLD_TIMEOUT = float(os.environ.get("HOLD_TIMEOUT", "10"))
@@ -387,8 +388,8 @@ async def main():
     for i in range(1, NUM_WARPS + 1):
         (DATA_ROOT / f"warp{i}").mkdir(parents=True, exist_ok=True)
     asyncio.create_task(registration_scheduler())
-    server = await asyncio.start_server(handle_client, "0.0.0.0", LISTEN_PORT)
-    log.info("warp forward-proxy on :%s hold=%ss warps=%s", LISTEN_PORT, HOLD_TIMEOUT, NUM_WARPS)
+    server = await asyncio.start_server(handle_client, LISTEN_HOST, LISTEN_PORT)
+    log.info("warp forward-proxy on %s:%s hold=%ss warps=%s", LISTEN_HOST, LISTEN_PORT, HOLD_TIMEOUT, NUM_WARPS)
     async with server:
         await server.serve_forever()
 
