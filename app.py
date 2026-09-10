@@ -16,6 +16,7 @@ HOLD_TIMEOUT = float(os.environ.get("HOLD_TIMEOUT", "10"))
 BASE_SOCKS_PORT = int(os.environ.get("BASE_SOCKS_PORT", "40001"))
 REG_INTERVAL_SEC = int(os.environ.get("REG_INTERVAL_SEC", "3600"))
 INITIAL_BURST = int(os.environ.get("INITIAL_BURST", "2"))
+BOOT_RETRY_SEC = int(os.environ.get("BOOT_RETRY_SEC", "300"))
 PROXY_TOKEN = os.environ.get("PROXY_TOKEN", "")
 MAX_FETCH_BYTES = 10 * 1024 * 1024
 
@@ -636,7 +637,13 @@ async def registration_scheduler():
             continue
         if w.has_registration():
             asyncio.create_task(boot_one(w))
-    start = time.monotonic()
+    async def retry_unready():
+        while True:
+            await asyncio.sleep(BOOT_RETRY_SEC)
+            for w in manager.instances:
+                if w.has_registration() and not w.ready:
+                    asyncio.create_task(boot_one(w))
+    asyncio.create_task(retry_unready())
     while len(registered_now) < NUM_WARPS:
         await asyncio.sleep(REG_INTERVAL_SEC)
         nxt = next((w for w in manager.instances if w.idx not in registered_now), None)
@@ -667,7 +674,7 @@ async def register_one(w: WarpInstance) -> bool:
     return "already" in low
 async def boot_one(w: WarpInstance):
     await ensure_proxy_mode(w)
-    ok = await poll_until_connected(w, timeout=60)
+    ok = await poll_until_connected(w, timeout=120)
     w.ready = ok
     if ok and manager.healthy():
         manager.ready_event.set()
