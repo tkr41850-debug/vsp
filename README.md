@@ -7,10 +7,12 @@ client --HTTPS--> pool --UDP/WireGuard--> WARP --> internet
 (local edge)      (where UDP works)
 ```
 
-- **Server** (`app.py`): 8 WARP identities (2 at boot, +1/hr), forward proxy on `:8080`
+- **Server** (`app.py`): up to 8 WARP identities (1 at boot, +1 per 8h shared
+  budget — re-registrations consume the same budget), forward proxy on `:8080`
   (`GET` + `CONNECT`), plus edge-safe endpoints: `GET /health`, `POST /rotate`,
   `POST /fetch` (single request through WARP), `/relay` (websocket TCP bridge).
-  WARP runs in proxy mode only — never touches system routes/DNS.
+  Daemons start lazily (1 at first, more as registrations arrive), so churn stays
+  minimal. WARP runs in proxy mode only — never touches system routes/DNS.
 - **Client** (`edge.py`): forward proxy for UDP-blocked networks. Plain HTTP goes
   via pool `/fetch`, `CONNECT` goes via pool `/relay` over wss.
 
@@ -57,8 +59,12 @@ just via-proxy         # curl through the edge, expect a WARP exit IP
 | `PROXY_TOKEN` | empty (open) | If set, `/fetch` + `/relay` require `Bearer` token or `?token=` |
 | `WARP_PROTOCOL` | `WireGuard` | `warp-cli tunnel protocol set` value per instance |
 | `WARP_MASQUE` | empty (CF default) | e.g. `h2-only` for TCP-only MASQUE where UDP is filtered |
-| `NUM_WARPS` | `8` | Pool size (registrations stagger: 2 at boot, +1/hr) |
+| `NUM_WARPS` | `8` | Pool size (registrations stagger: 1 at boot, +1 per 8h shared budget) |
 | `HOLD_TIMEOUT` | `10` | Seconds to hold requests while no warp is ready, then `502 + Retry-After: 5` |
+| `BOOT_RETRY_SEC` | `300` | Reconnect retry interval for registered-but-unready warps |
+| `STALE_FAIL_THRESHOLD` | `3` | Failed boots before an identity counts as stale |
+| `HEAL_COOLDOWN_SEC` | `3600` | Min interval between heal re-registrations per warp |
+| `STATUS_CACHE_SEC` | `30` | `/health` reads cached statuses instead of spawning warp-cli per hit |
 
 Identities persist in `./data/warpN` (mounted to `/data`, git-ignored) so restarts
 reuse registrations. If prompted `Kill existing? [Y/n]`, a server container is
