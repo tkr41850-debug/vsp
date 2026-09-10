@@ -40,7 +40,7 @@ PROXY_TOKEN = os.environ.get("PROXY_TOKEN", "")
 MAX_FETCH_BYTES = 10 * 1024 * 1024
 DEBUG_CLI = os.environ.get("DEBUG", "") == "1"
 SEND_CHUNK = _env_int("SEND_CHUNK", 500)
-SEND_PACE_SEC = _env_float("SEND_PACE_SEC", 0.2)
+SEND_PACE_SEC = _env_float("SEND_PACE_SEC", 0.01)
 FETCH_HELLO = os.environ.get("FETCH_HELLO", "compact")
 
 
