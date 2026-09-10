@@ -65,6 +65,12 @@ just via-proxy         # curl through the edge, expect a WARP exit IP
 | `STALE_FAIL_THRESHOLD` | `3` | Failed boots before an identity counts as stale |
 | `HEAL_COOLDOWN_SEC` | `3600` | Min interval between heal re-registrations per warp |
 | `STATUS_CACHE_SEC` | `30` | `/health` reads cached statuses instead of spawning warp-cli per hit |
+| `SEND_CHUNK` | `500` | Upstream write chunk size (bytes) toward warp |
+| `SEND_PACE_SEC` | `0.2` | Pause between upstream chunks; `0` disables (lossy paths stall) |
+| `FETCH_HELLO` | `compact` | Pool-originated TLS hello (`compact` = small TLS1.2, `full` = defaults) |
+| `WARP_NET_MTU` | empty | Optionally force container egress MTU (e.g. `1400`) |
+| `PROXY_TOKEN` | empty | Gates `/fetch` + `/relay` via `Bearer` or `?token=` |
+| `DEBUG` | empty | `1` exposes `/debug/cli` (key-gated, see below) |
 
 Identities persist in `./data/warpN` (mounted to `/data`, git-ignored) so restarts
 reuse registrations. If prompted `Kill existing? [Y/n]`, a server container is
