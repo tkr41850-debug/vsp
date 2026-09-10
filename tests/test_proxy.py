@@ -292,3 +292,53 @@ def test_parse_status_output():
     assert warp_app.parse_status_output("Status update: Disconnected\nReason: Manual Disconnection") == ("Disconnected", "Manual Disconnection")
     assert warp_app.parse_status_output("Unable to connect to the daemon: nope") == ("Unable to connect to the daemon: nope", "")
     assert warp_app.parse_status_output("") == ("unknown", "")
+
+
+async def _debug_post(port: int, spec: dict) -> tuple[int, dict]:
+    body = json.dumps(spec).encode()
+    r, w = await asyncio.open_connection("127.0.0.1", port)
+    w.write(f"POST /debug/cli HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
+    await w.drain()
+    raw = await r.read()
+    w.close()
+    _, _, rbody = raw.partition(b"\r\n\r\n")
+    status = int(raw.split(b"\r\n", 1)[0].split()[1])
+    return status, json.loads(rbody.decode() or "{}")
+
+
+def test_debug_cli():
+    import shutil as _sh
+    if _sh.which("warp-cli") is None:
+        import pytest as _pt
+        _pt.skip("warp-cli not installed")
+
+    async def _go():
+        srv = await asyncio.start_server(warp_app.handle_client, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        old = warp_app.DEBUG_CLI
+        try:
+            warp_app.DEBUG_CLI = False
+            try:
+                st, _ = await _debug_post(port, {"instance": 1, "args": ["--version"]})
+                assert st == 404
+            finally:
+                srv.close()
+            srv2 = await asyncio.start_server(warp_app.handle_client, "127.0.0.1", 0)
+            port2 = srv2.sockets[0].getsockname()[1]
+            warp_app.DEBUG_CLI = True
+            try:
+                st, res = await _debug_post(port2, {"instance": 1, "args": ["--version"]})
+                assert st == 200 and res["ok"] is True and res["rc"] == 0
+                assert "20" in res["stdout"]
+                st, _ = await _debug_post(port2, {"instance": 1, "args": "oops"})
+                assert st == 400
+                st, _ = await _debug_post(port2, {"instance": 99, "args": ["--version"]})
+                assert st == 400
+                st, res = await _debug_post(port2, {"runtime_dir": "/run/warp2", "args": ["--version"]})
+                assert st == 200 and res["rc"] == 0
+            finally:
+                srv2.close()
+        finally:
+            warp_app.DEBUG_CLI = old
+    asyncio.run(_go())

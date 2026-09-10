@@ -19,6 +19,7 @@ INITIAL_BURST = int(os.environ.get("INITIAL_BURST", "2"))
 BOOT_RETRY_SEC = int(os.environ.get("BOOT_RETRY_SEC", "300"))
 PROXY_TOKEN = os.environ.get("PROXY_TOKEN", "")
 MAX_FETCH_BYTES = 10 * 1024 * 1024
+DEBUG_CLI = os.environ.get("DEBUG", "") == "1"
 
 log = logging.getLogger("warp-proxy")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -460,6 +461,53 @@ async def serve_fetch(writer, method: str, headers: dict, query: str, body: byte
     await writer.drain()
 
 
+async def serve_debug_cli(writer, body: bytes):
+    import re as _re
+    try:
+        spec = json.loads(body.decode("utf-8") or "{}")
+    except Exception:
+        spec = {}
+    args = spec.get("args", [])
+    if not isinstance(args, list) or not args or not all(isinstance(a, str) for a in args):
+        payload = json.dumps({"ok": False, "error": "args must be a non-empty string list"}).encode()
+        writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+        await writer.drain()
+        return
+    if "instance" in spec:
+        try:
+            idx = int(spec["instance"])
+        except (TypeError, ValueError):
+            idx = -1
+        if idx < 1 or idx > NUM_WARPS:
+            payload = json.dumps({"ok": False, "error": "bad instance"}).encode()
+            writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+            await writer.drain()
+            return
+        runtime_dir = f"/run/warp{idx}"
+    else:
+        runtime_dir = str(spec.get("runtime_dir", "/run/warp1"))
+        if not _re.fullmatch(r"/run/warp\d+", runtime_dir):
+            payload = json.dumps({"ok": False, "error": "bad runtime_dir"}).encode()
+            writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+            await writer.drain()
+            return
+    loop = asyncio.get_running_loop()
+    def _do():
+        import subprocess as _sp
+        env = dict(os.environ)
+        env["RUNTIME_DIRECTORY"] = runtime_dir
+        try:
+            p = _sp.run(["warp-cli", "--accept-tos", *args], env=env,
+                        capture_output=True, text=True, timeout=30)
+            return p.returncode, p.stdout, p.stderr
+        except _sp.TimeoutExpired:
+            return 124, "", "timeout"
+    rc, out, err = await loop.run_in_executor(None, _do)
+    payload = json.dumps({"ok": True, "rc": rc, "stdout": out[-4000:], "stderr": err[-4000:]}).encode()
+    writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+    await writer.drain()
+
+
 async def handle_client(c_r: asyncio.StreamReader, c_w: asyncio.StreamWriter):
     try:
         request_line, headers, raw = await read_headers(c_r)
@@ -542,6 +590,19 @@ async def handle_client(c_r: asyncio.StreamReader, c_w: asyncio.StreamWriter):
                     _sw.close()
                 except Exception:
                     pass
+            c_w.close()
+            return
+        if _path == "/debug/cli":
+            if not DEBUG_CLI:
+                c_w.write(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+                await c_w.drain()
+                c_w.close()
+                return
+            length = int(headers.get("content-length", "0") or 0)
+            rest = raw.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in raw else b""
+            need = length - len(rest)
+            body = rest[:length] if need <= 0 else rest + await c_r.readexactly(need)
+            await serve_debug_cli(c_w, body)
             c_w.close()
             return
         if _path == "/fetch":
