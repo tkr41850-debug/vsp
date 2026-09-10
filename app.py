@@ -351,7 +351,18 @@ async def relay(a_r, a_w, b_r, b_w):
             w.write_eof()
         except Exception:
             pass
-    await asyncio.gather(_copy(a_r, b_w), _copy(b_r, a_w))
+    try:
+        t1 = asyncio.ensure_future(_copy(a_r, b_w))
+        t2 = asyncio.ensure_future(_copy(b_r, a_w))
+        _, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+    finally:
+        for w in (a_w, b_w):
+            try:
+                w.close()
+            except Exception:
+                pass
 
 async def serve_manager_api(writer: asyncio.StreamWriter, method: str, path: str, body: bytes):
     if method == "GET" and path in ("/health", "/healthz"):
@@ -436,6 +447,73 @@ async def handle_client(c_r: asyncio.StreamReader, c_w: asyncio.StreamWriter):
         _t = _us(target) if target.startswith("http") else None
         _path = (_t.path if _t else target.split("?")[0])
         _query = (_t.query if _t else target.partition("?")[2])
+        if _path == "/relay" and headers.get("upgrade", "").lower() == "websocket":
+            from urllib.parse import parse_qs as _pqs
+            import wscodec as _ws
+            _q = _pqs(_query)
+            _rh, _rp = _q.get("host", [""])[0], _q.get("port", ["443"])[0]
+            _key = headers.get("sec-websocket-key", "")
+            if not _key or not _rh or not check_token(headers, _query):
+                c_w.write(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+                await c_w.drain()
+                c_w.close()
+                return
+            try:
+                _rp = int(_rp)
+            except ValueError:
+                _rp = 443
+            _inst = await manager.wait_ready()
+            if _inst is None:
+                c_w.write(b"HTTP/1.1 502 No Warp Ready\r\nConnection: close\r\nRetry-After: 5\r\n\r\n")
+                await c_w.drain()
+                c_w.close()
+                return
+            try:
+                _sr, _sw = await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", _inst.socks_port), timeout=10)
+                _sr, _sw = await asyncio.wait_for(
+                    socks5_connect((_sr, _sw), _rh, _rp), timeout=10)
+            except Exception as exc:
+                _inst.last_error = str(exc)[-200:]
+                c_w.write(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                await c_w.drain()
+                c_w.close()
+                return
+            c_w.write(_ws.server_handshake_response(_key))
+            await c_w.drain()
+            async def _ws2tcp():
+                try:
+                    while True:
+                        fr = await _ws.read_frame(c_r)
+                        if fr is None:
+                            break
+                        _sw.write(fr[1])
+                        await _sw.drain()
+                except Exception:
+                    pass
+            async def _tcp2ws():
+                try:
+                    while True:
+                        chunk = await _sr.read(65536)
+                        if not chunk:
+                            break
+                        c_w.write(_ws.encode_frame(chunk))
+                        await c_w.drain()
+                except Exception:
+                    pass
+            try:
+                t1 = asyncio.ensure_future(_ws2tcp())
+                t2 = asyncio.ensure_future(_tcp2ws())
+                _, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
+                for t in pending:
+                    t.cancel()
+            finally:
+                try:
+                    _sw.close()
+                except Exception:
+                    pass
+            c_w.close()
+            return
         if _path == "/fetch":
             if not check_token(headers, _query):
                 c_w.write(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
