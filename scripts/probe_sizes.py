@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Graded upstream sizes through pool /relay (MTU blackhole detector). Usage:
-    python3 scripts/probe_sizes.py [--base https://pool.example.invalid]
+    python3 scripts/probe_sizes.py [--base URL]
 """
 from __future__ import annotations
 
 import argparse
+import os
 import asyncio
 import ssl
 import sys
@@ -60,6 +61,8 @@ async def main(base: str) -> int:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default="https://pool.example.invalid")
+    ap.add_argument("--base", default=os.environ.get("VSP_API_BASE", ""))
     args = ap.parse_args()
+    if not args.base:
+        ap.error("set VSP_API_BASE or pass --base, e.g. VSP_API_BASE=https://<pool-host>")
     raise SystemExit(asyncio.run(main(args.base)))

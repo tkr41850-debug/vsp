@@ -11,7 +11,7 @@ import os
 import sys
 import urllib.request
 
-BASE = os.environ.get("VSP_API_BASE", "https://pool.example.invalid")
+BASE = os.environ.get("VSP_API_BASE", "")
 KEY = os.environ.get("VSP_DEBUG_KEY", "")
 
 
@@ -33,6 +33,9 @@ def call(payload: dict) -> tuple[int, dict]:
 
 
 def main(instance: int) -> int:
+    if not BASE:
+        print("set VSP_API_BASE, e.g. export VSP_API_BASE=https://<pool-host>")
+        return 2
     if not KEY:
         print("set VSP_DEBUG_KEY first (just debug-key on the pool box)")
         return 2

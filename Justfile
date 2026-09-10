@@ -30,9 +30,10 @@ edge-build:
 # Edge client: forward-proxy for networks with UDP blocked. Reads pool from VSP_API_BASE.
 # Usage: VSP_API_BASE=https://<pool-host> just client [port]
 client listen="8080": edge-build
+    if [ -z "${VSP_API_BASE:-}" ]; then echo "set VSP_API_BASE first, e.g. export VSP_API_BASE=https://<pool-host>" >&2; exit 2; fi
     sudo docker rm -f warp-edge 2>/dev/null || true
-    sudo docker run -d --name warp-edge --restart unless-stopped -p 127.0.0.1:{{listen}}:8080 -e VSP_API_BASE="${VSP_API_BASE:-https://pool.example.invalid}" -e EDGE_PORT=8080 warp-edge
-    @echo "edge up: 127.0.0.1:{{listen}} -> ${VSP_API_BASE:-https://pool.example.invalid} (restart unless-stopped)"
+    sudo docker run -d --name warp-edge --restart unless-stopped -p 127.0.0.1:{{listen}}:8080 -e VSP_API_BASE="${VSP_API_BASE}" -e EDGE_PORT=8080 warp-edge
+    @echo "edge up: 127.0.0.1:{{listen}} -> ${VSP_API_BASE} (restart unless-stopped)"
 
 debug-key:
     @cat {{data}}/debug.key 2>/dev/null || echo "no debug key yet (start server with DEBUG=1 first)"
@@ -50,23 +51,23 @@ rotate:
 
 # Pool snapshot (any pool): VSP_API_BASE=https://<pool-host> just pool
 pool:
-    @VSP_API_BASE="${VSP_API_BASE:-https://pool.example.invalid}" bash scripts/pool.sh
+    @bash scripts/pool.sh
 
-# Probes (pool default https://pool.example.invalid, edge default http://127.0.0.1:8080)
+# Probes (pool from VSP_API_BASE, edge default http://127.0.0.1:8080)
 probe-edge:
     @python3 scripts/probe_edge.py --edge http://127.0.0.1:{{port}}
 
 probe-fetch:
-    @python3 scripts/probe_fetch.py --base "${VSP_API_BASE:-https://pool.example.invalid}"
+    @python3 scripts/probe_fetch.py --base "${VSP_API_BASE:?set VSP_API_BASE, e.g. export VSP_API_BASE=https://<pool-host>}"
 
 probe-tls:
-    @python3 scripts/probe_tls.py --base "${VSP_API_BASE:-https://pool.example.invalid}"
+    @python3 scripts/probe_tls.py --base "${VSP_API_BASE:?set VSP_API_BASE, e.g. export VSP_API_BASE=https://<pool-host>}"
 
 probe-sizes:
-    @python3 scripts/probe_sizes.py --base "${VSP_API_BASE:-https://pool.example.invalid}"
+    @python3 scripts/probe_sizes.py --base "${VSP_API_BASE:?set VSP_API_BASE, e.g. export VSP_API_BASE=https://<pool-host>}"
 
 probe-debug:
-    @VSP_API_BASE="${VSP_API_BASE:-https://pool.example.invalid}" python3 scripts/probe_debug.py
+    @python3 scripts/probe_debug.py
 
 via-proxy:
     curl -s --max-time 25 -x http://127.0.0.1:{{port}} -L ipconfig.me; echo

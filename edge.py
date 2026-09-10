@@ -17,7 +17,7 @@ from urllib.parse import urlsplit, urlencode
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import wscodec
 
-POOL_BASE = os.environ.get("VSP_API_BASE", os.environ.get("POOL_BASE", "https://pool.example.invalid")).rstrip("/")
+POOL_BASE = os.environ.get("VSP_API_BASE", os.environ.get("POOL_BASE", "")).rstrip("/")
 PROXY_TOKEN = os.environ.get("PROXY_TOKEN", "")
 LISTEN_HOST = os.environ.get("LISTEN_HOST", "127.0.0.1")
 EDGE_PORT = int(os.environ.get("EDGE_PORT", "8080"))
@@ -269,6 +269,9 @@ async def handle_connect(c_r, c_w, host: str, port: int):
 
 
 async def main():
+    if not POOL_BASE:
+        log.error("VSP_API_BASE is not set (e.g. VSP_API_BASE=https://<pool-host>)")
+        raise SystemExit(2)
     server = await asyncio.start_server(handle_client, LISTEN_HOST, EDGE_PORT)
     log.info("edge forward-proxy on %s:%s pool=%s", LISTEN_HOST, EDGE_PORT, POOL_BASE)
     async with server:
