@@ -84,3 +84,17 @@ curl -X POST https://<pool>/debug/cli -H "X-Debug-Key: $KEY" \
 
 Without `DEBUG=1` the endpoint is 404; with a wrong key it's 403. Turn it off
 (restart without `DEBUG`) when done.
+
+`POST /debug/cli` with `{"ephemeral": {...}}` runs a one-off config on warp1 by
+default: `setup` (list of warp-cli arg lists), then one `action`, then `teardown`,
+then `disconnect` unless `"leave": true`. Action kinds: `status`, `fetch`
+(`url`, `method`, `headers`, `body_b64` through that instance's SOCKS), `sleep`
+(`seconds`, lets you poll `status` between calls):
+
+```
+curl -X POST https://<pool>/debug/cli -H "X-Debug-Key: $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"ephemeral":{"instance":1,
+    "setup":[["tunnel","protocol","set","MASQUE"]],
+    "action":{"kind":"fetch","url":"http://example.com/"}}}'
+```
