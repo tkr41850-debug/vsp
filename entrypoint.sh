@@ -22,6 +22,8 @@ for i in $(seq 1 "$NUM_WARPS"); do
   done
   echo "warp$i socket: $(ls -l /run/warp$i/warp_service 2>&1)"
   RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos mode proxy >/dev/null 2>&1 || true
-  RUNTIME_DIRECTORY="/run/warp$i" warp-cli proxy port $((40000 + i)) >/dev/null 2>&1 || true
+  RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos proxy port $((40000 + i)) >/dev/null 2>&1 || true
+  RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos tunnel protocol set MASQUE >/dev/null 2>&1 || true
+  RUNTIME_DIRECTORY="/run/warp$i" warp-cli --accept-tos tunnel masque-options set h2-only >/dev/null 2>&1 || true
 done
 exec python3 /app/app.py
