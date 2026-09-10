@@ -14,19 +14,25 @@ test:
 build:
     sudo docker build -t {{image}} .
 
-up: build
+alias up := server
+
+# Pool server: WARP pool + forward-proxy + /fetch + /relay. Loopback-only + autorestart.
+# Deploy where UDP egress works, then expose over e.g. `cloudflared tunnel`.
+server listen="8080": build
     mkdir -p {{data}}
     sudo docker rm -f {{image}} 2>/dev/null || true
-    sudo docker run -d --name {{image}} --privileged --device=/dev/net/tun -p 127.0.0.1:{{port}}:8080 -v "$PWD/{{data}}:/data" -e NUM_WARPS={{warps}} -e PROXY_PORT=8080 -e HOLD_TIMEOUT=10 {{image}}
-    @echo "up. try: just health && just via-proxy"
+    sudo docker run -d --name {{image}} --restart unless-stopped --privileged --device=/dev/net/tun -p 127.0.0.1:{{listen}}:8080 -v "$PWD/{{data}}:/data" -e NUM_WARPS={{warps}} -e PROXY_PORT=8080 -e HOLD_TIMEOUT=10 {{image}}
+    @echo "server up: 127.0.0.1:{{listen}} (restart unless-stopped). try: just health && just via-proxy"
 
-# Detached container for Cloudflare Tunnel: loopback-only port + autorestart.
-# Point cloudflared at http://127.0.0.1:<listen>, e.g. `just tunnel-up 18080`.
-tunnel-up listen="8080": build
-    mkdir -p {{data}}
-    sudo docker rm -f {{image}}-tunnel 2>/dev/null || true
-    sudo docker run -d --name {{image}}-tunnel --restart unless-stopped --privileged --device=/dev/net/tun -p 127.0.0.1:{{listen}}:8080 -v "$PWD/{{data}}:/data" -e NUM_WARPS={{warps}} -e PROXY_PORT=8080 -e HOLD_TIMEOUT=10 {{image}}
-    @echo "tunnel-ready: 127.0.0.1:{{listen}} -> container :8080 (restart unless-stopped)"
+edge-build:
+    sudo docker build -f Dockerfile.edge -t warp-edge .
+
+# Edge client: forward-proxy for networks with UDP blocked. Reads pool from VSP_API_BASE.
+# Usage: VSP_API_BASE=https://<pool-host> just client [port]
+client listen="8080": edge-build
+    sudo docker rm -f warp-edge 2>/dev/null || true
+    sudo docker run -d --name warp-edge --restart unless-stopped -p 127.0.0.1:{{listen}}:8080 -e VSP_API_BASE="${VSP_API_BASE:-https://pool.example.invalid}" -e EDGE_PORT=8080 warp-edge
+    @echo "edge up: 127.0.0.1:{{listen}} -> ${VSP_API_BASE:-https://pool.example.invalid} (restart unless-stopped)"
 
 stop:
     -sudo docker rm -f {{image}} 2>/dev/null
