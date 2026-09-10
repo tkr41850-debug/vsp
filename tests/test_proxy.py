@@ -109,3 +109,29 @@ def test_has_registration(tmp_path, monkeypatch):
     (tmp_path / "warp3").mkdir(parents=True)
     (tmp_path / "warp3" / "reg.json").write_text("{}")
     assert w.has_registration() is True
+
+
+def test_ws_roundtrip():
+    sys.path.insert(0, str(ROOT))
+    import wscodec
+    assert wscodec.accept_key("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+    key = wscodec.new_key()
+    resp = wscodec.server_handshake_response(key)
+    assert b"101 Switching Protocols" in resp
+    assert wscodec.accept_key(key).encode() in resp
+
+    async def _frames():
+        import os as _os
+        s_r = asyncio.StreamReader()
+        payload = b"hello-warp" * 100
+        s_r.feed_data(wscodec.encode_frame(payload, mask=True))
+        s_r.feed_eof()
+        op, out = await wscodec.read_frame(s_r)
+        assert op == 0x2 and out == payload
+        s_r2 = asyncio.StreamReader()
+        big = _os.urandom(70000)
+        s_r2.feed_data(wscodec.encode_frame(big))
+        s_r2.feed_eof()
+        op2, out2 = await wscodec.read_frame(s_r2)
+        assert out2 == big
+    asyncio.run(_frames())
