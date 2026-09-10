@@ -344,6 +344,8 @@ def test_debug_cli(monkeypatch, tmp_path):
                 assert st == 400
                 st, res = await _debug_post(port2, {"runtime_dir": "/run/warp2", "args": ["--version"]}, hdr)
                 assert st == 200 and res["rc"] == 0
+                st, res = await _debug_post(port2, {"log": 99}, hdr)
+                assert st == 400
             finally:
                 srv2.close()
         finally:

@@ -564,6 +564,30 @@ async def serve_debug_cli(writer, body: bytes):
         spec = json.loads(body.decode("utf-8") or "{}")
     except Exception:
         spec = {}
+    if "log" in spec:
+        try:
+            idx = int(spec["log"])
+        except (TypeError, ValueError):
+            idx = -1
+        if idx < 1 or idx > NUM_WARPS:
+            payload = json.dumps({"ok": False, "error": "bad log index"}).encode()
+            writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+            await writer.drain()
+            return
+        lines = int(spec.get("lines", 30) or 30)
+        lines = max(1, min(lines, 200))
+        try:
+            with open(f"/var/log/warp{idx}/cfwarp_service_log.txt", "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 65536))
+                tail = f.read().decode("utf-8", "replace").splitlines()[-lines:]
+        except OSError as exc:
+            tail = [f"<unreadable: {exc}>"]
+        payload = json.dumps({"ok": True, "lines": tail}).encode()
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+        await writer.drain()
+        return
     args = spec.get("args", [])
     if not isinstance(args, list) or not args or not all(isinstance(a, str) for a in args):
         payload = json.dumps({"ok": False, "error": "args must be a non-empty string list"}).encode()
