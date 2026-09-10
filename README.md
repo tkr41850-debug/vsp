@@ -49,6 +49,9 @@ just via-proxy         # curl through the edge, expect a WARP exit IP
 | `just via-proxy` / `just direct` | `curl.sh` through the edge / direct baseline IP |
 | `just test` | Mocked pytest suite (no network needed) |
 | `just stop` / `just logs` | Stop everything / tail logs |
+| `just pool` | Pool health snapshot (any pool via `VSP_API_BASE`) |
+| `just probe-edge` / `probe-fetch` / `probe-tls` / `probe-sizes` | Edge e2e / pool fetch / TLS handshake / upstream size grades |
+| `just probe-debug` | Live `/debug/cli` check (needs `VSP_DEBUG_KEY`) |
 | `just debug-key` | Print the debug key (pool machine, needs a `DEBUG=1` boot first) |
 
 ## Env
