@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location("warp_app", ROOT / "app.py")
 assert spec and spec.loader
 warp_app = importlib.util.module_from_spec(spec)
@@ -112,7 +114,6 @@ def test_has_registration(tmp_path, monkeypatch):
 
 
 def test_ws_roundtrip():
-    sys.path.insert(0, str(ROOT))
     import wscodec
     assert wscodec.accept_key("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
     key = wscodec.new_key()
@@ -214,3 +215,73 @@ def test_check_token():
         assert warp_app.check_token({"authorization": "Bearer wrong"}, "") is False
     finally:
         warp_app.PROXY_TOKEN = old
+
+
+def test_relay_websocket_echo():
+    import wscodec as _ws
+
+    async def _echo(r, w):
+        try:
+            while True:
+                d = await r.read(65536)
+                if not d:
+                    break
+                w.write(d)
+                await w.drain()
+        except Exception:
+            pass
+        finally:
+            try:
+                w.close()
+            except Exception:
+                pass
+
+    async def _go():
+        esrv = await asyncio.start_server(_echo, "127.0.0.1", 0)
+        eport = esrv.sockets[0].getsockname()[1]
+        ssrv, sport = await _fake_socks5(eport)
+        old_manager = warp_app.manager
+        warp_app.manager = warp_app.Manager(
+            instances=[warp_app.WarpInstance(idx=99, socks_port=sport, ready=True)])
+        warp_app.manager.ready_event.set()
+        psrv = await asyncio.start_server(warp_app.handle_client, "127.0.0.1", 0)
+        pport = psrv.sockets[0].getsockname()[1]
+        try:
+            r, w = await asyncio.open_connection("127.0.0.1", pport)
+            key = _ws.new_key()
+            w.write(f"GET /relay?host=e.test&port=443 HTTP/1.1\r\nHost: x\r\n"
+                    f"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                    f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode("latin1"))
+            await w.drain()
+            head = await asyncio.wait_for(r.readuntil(b"\r\n\r\n"), timeout=10)
+            assert b" 101 " in head.split(b"\r\n", 1)[0]
+            w.write(_ws.encode_frame(b"ping-relay", mask=True))
+            await w.drain()
+            fr = await asyncio.wait_for(_ws.read_frame(r), timeout=10)
+            assert fr is not None and fr[1] == b"ping-relay"
+            w.close()
+        finally:
+            for srv in (esrv, ssrv, psrv):
+                srv.close()
+            for t in asyncio.all_tasks():
+                if t is not asyncio.current_task():
+                    t.cancel()
+        warp_app.manager = old_manager
+    _run(_go())
+
+
+def test_edge_read_full_chunked():
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location("edge_mod", ROOT / "edge.py")
+    edge = importlib.util.module_from_spec(spec)
+    sys.modules["edge_mod"] = edge
+    spec.loader.exec_module(edge)
+
+    async def _go():
+        r = asyncio.StreamReader()
+        r.feed_data(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                    b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")
+        r.feed_eof()
+        raw = await edge.read_full(r)
+        assert raw.endswith(b"hello world")
+    _run(_go())
