@@ -135,3 +135,82 @@ def test_ws_roundtrip():
         op2, out2 = await wscodec.read_frame(s_r2)
         assert out2 == big
     asyncio.run(_frames())
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+async def _fake_origin():
+    async def _h(r, w):
+        try:
+            data = await asyncio.wait_for(r.readuntil(b"\r\n\r\n"), timeout=5)
+            body = b'{"origin":true}'
+            w.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                    + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
+            await w.drain()
+        finally:
+            w.close()
+    srv = await asyncio.start_server(_h, "127.0.0.1", 0)
+    return srv, srv.sockets[0].getsockname()[1]
+
+
+async def _fake_socks5(origin_port):
+    async def _h(r, w):
+        try:
+            await r.readexactly(3)
+            w.write(b"\x05\x00")
+            await w.drain()
+            req = await r.readexactly(4)
+            assert req[:3] == b"\x05\x01\x00" and req[3] == 3
+            ln = (await r.readexactly(1))[0]
+            await r.readexactly(ln + 2)
+            o_r, o_w = await asyncio.open_connection("127.0.0.1", origin_port)
+            w.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+            await w.drain()
+            async def _cp(a, b):
+                try:
+                    while True:
+                        d = await a.read(65536)
+                        if not d:
+                            break
+                        b.write(d)
+                        await b.drain()
+                except Exception:
+                    pass
+            await asyncio.gather(_cp(r, o_w), _cp(o_r, w))
+        finally:
+            try:
+                w.close()
+            except Exception:
+                pass
+    srv = await asyncio.start_server(_h, "127.0.0.1", 0)
+    return srv, srv.sockets[0].getsockname()[1]
+
+
+def test_fetch_blocking_through_fake_socks():
+    async def _go():
+        osrv, oport = await _fake_origin()
+        ssrv, sport = await _fake_socks5(oport)
+        async with osrv, ssrv:
+            loop = asyncio.get_running_loop()
+            status, hdrs, body = await loop.run_in_executor(
+                None, lambda: warp_app.fetch_blocking(sport, "GET", "http://example.test/x", {}, b""))
+            assert status == 200
+            assert body == b'{"origin":true}'
+            assert hdrs.get("content-type") == "application/json"
+    _run(_go())
+
+
+def test_check_token():
+    old = warp_app.PROXY_TOKEN
+    try:
+        warp_app.PROXY_TOKEN = ""
+        assert warp_app.check_token({}, "") is True
+        warp_app.PROXY_TOKEN = "secret"
+        assert warp_app.check_token({}, "") is False
+        assert warp_app.check_token({}, "token=secret") is True
+        assert warp_app.check_token({"authorization": "Bearer secret"}, "") is True
+        assert warp_app.check_token({"authorization": "Bearer wrong"}, "") is False
+    finally:
+        warp_app.PROXY_TOKEN = old

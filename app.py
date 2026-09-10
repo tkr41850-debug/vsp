@@ -16,6 +16,8 @@ HOLD_TIMEOUT = float(os.environ.get("HOLD_TIMEOUT", "10"))
 BASE_SOCKS_PORT = int(os.environ.get("BASE_SOCKS_PORT", "40001"))
 REG_INTERVAL_SEC = int(os.environ.get("REG_INTERVAL_SEC", "3600"))
 INITIAL_BURST = int(os.environ.get("INITIAL_BURST", "2"))
+PROXY_TOKEN = os.environ.get("PROXY_TOKEN", "")
+MAX_FETCH_BYTES = 10 * 1024 * 1024
 
 log = logging.getLogger("warp-proxy")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -124,6 +126,119 @@ async def socks5_connect(reader_host_port: tuple, host: str, port: int):
     elif at == 4:
         await r.readexactly(18)
     return r, w
+
+def check_token(headers: dict, query: str) -> bool:
+    if not PROXY_TOKEN:
+        return True
+    if headers.get("authorization", "") == f"Bearer {PROXY_TOKEN}":
+        return True
+    for kv in query.split("&"):
+        k, _, v = kv.partition("=")
+        if k == "token" and v == PROXY_TOKEN:
+            return True
+    return False
+
+
+def _recvn(sock, n: int) -> bytes:
+    data = b""
+    while len(data) < n:
+        chunk = sock.recv(n - len(data))
+        if not chunk:
+            raise OSError("socks closed")
+        data += chunk
+    return data
+
+
+def fetch_blocking(socks_port: int, method: str, url: str,
+                   headers: dict, body: bytes, timeout: int = 20):
+    import socket as _sock
+    import ssl as _ssl
+    from urllib.parse import urlsplit
+    u = urlsplit(url)
+    if u.scheme not in ("http", "https"):
+        raise ValueError("unsupported scheme")
+    host = u.hostname or ""
+    if not host:
+        raise ValueError("no host")
+    port = u.port or (443 if u.scheme == "https" else 80)
+    if len(body) > MAX_FETCH_BYTES:
+        raise ValueError("body too large")
+    s = _sock.create_connection(("127.0.0.1", socks_port), timeout=timeout)
+    s.settimeout(timeout)
+    try:
+        s.sendall(b"\x05\x01\x00")
+        if _recvn(s, 2) != b"\x05\x00":
+            raise OSError("socks auth failed")
+        hb = host.encode()
+        s.sendall(b"\x05\x01\x00\x03" + bytes([len(hb)]) + hb + port.to_bytes(2, "big"))
+        hdr = _recvn(s, 4)
+        if hdr[0] != 5 or hdr[1] != 0:
+            raise OSError("socks connect failed")
+        at = hdr[3]
+        if at == 1:
+            _recvn(s, 6)
+        elif at == 3:
+            _recvn(s, _recvn(s, 1)[0] + 2)
+        elif at == 4:
+            _recvn(s, 18)
+        if u.scheme == "https":
+            ctx = _ssl.create_default_context()
+            s = ctx.wrap_socket(s, server_hostname=host)
+        path = u.path or "/"
+        if u.query:
+            path += "?" + u.query
+        skip = {"host", "connection", "proxy-connection", "content-length",
+                "transfer-encoding", "upgrade", "keep-alive"}
+        out = [f"{method} {path} HTTP/1.1", f"Host: {host}", "Connection: close"]
+        for k, v in headers.items():
+            if k.lower() in skip or "\n" in v or "\r" in v:
+                continue
+            out.append(f"{k}: {v}")
+        if body:
+            out.append(f"Content-Length: {len(body)}")
+        raw = ("\r\n".join(out) + "\r\n\r\n").encode("latin1") + body
+        s.sendall(raw)
+        f = s.makefile("rb")
+        status_line = f.readline(8192).decode("latin1").strip()
+        parts = status_line.split(" ", 2)
+        status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 502
+        rheaders: dict[str, str] = {}
+        while True:
+            line = f.readline(8192).decode("latin1")
+            if line in ("\r\n", "\n", ""):
+                break
+            if ":" in line:
+                k, v = line.split(":", 1)
+                rheaders[k.strip().lower()] = v.strip()
+        if rheaders.get("transfer-encoding", "").lower() == "chunked":
+            chunks = b""
+            while True:
+                size_line = f.readline(256).decode("latin1").strip().split(";")[0]
+                size = int(size_line, 16)
+                if size == 0:
+                    f.readline(16)
+                    break
+                chunks += f.read(size)
+                f.read(2)
+                if len(chunks) > MAX_FETCH_BYTES:
+                    raise ValueError("response too large")
+            rbody = chunks
+        elif rheaders.get("content-length", "").isdigit():
+            remaining = int(rheaders["content-length"])
+            if remaining > MAX_FETCH_BYTES:
+                raise ValueError("response too large")
+            rbody = f.read(remaining)
+        else:
+            rbody = f.read(MAX_FETCH_BYTES + 1)
+            if len(rbody) > MAX_FETCH_BYTES:
+                raise ValueError("response too large")
+        return status, rheaders, rbody
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
 
 @dataclass
 class Manager:
@@ -260,6 +375,50 @@ async def serve_manager_api(writer: asyncio.StreamWriter, method: str, path: str
         return True
     return False
 
+async def serve_fetch(writer, method: str, headers: dict, query: str, body: bytes):
+    import base64 as _b64
+    from urllib.parse import parse_qs, unquote as _uq
+    loop = asyncio.get_running_loop()
+    if method == "GET":
+        url = parse_qs(query).get("url", [""])[0]
+        fwd_headers: dict = {}
+        fwd_body = b""
+    else:
+        try:
+            spec = json.loads(body.decode("utf-8") or "{}")
+        except Exception:
+            spec = {}
+        url = spec.get("url", "")
+        fwd_headers = spec.get("headers", {}) or {}
+        raw_body = spec.get("body_b64", "")
+        fwd_body = _b64.b64decode(raw_body) if raw_body else b""
+    if not url or not url.startswith(("http://", "https://")):
+        payload = json.dumps({"ok": False, "error": "missing url"}).encode()
+        writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+        await writer.drain()
+        return
+    inst = await manager.wait_ready()
+    if inst is None:
+        payload = json.dumps({"ok": False, "error": "no warp ready"}).encode()
+        writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\nRetry-After: 5\r\n\r\n" + payload)
+        await writer.drain()
+        return
+    try:
+        status, rheaders, rbody = await loop.run_in_executor(
+            None, lambda: fetch_blocking(inst.socks_port, method if method != "GET" else "GET",
+                                         url, fwd_headers, fwd_body))
+    except Exception as exc:
+        inst.last_error = str(exc)[-200:]
+        payload = json.dumps({"ok": False, "error": str(exc)[-200:]}).encode()
+        writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+        await writer.drain()
+        return
+    payload = json.dumps({"ok": True, "status": status, "headers": rheaders,
+                          "body_b64": _b64.b64encode(rbody).decode()}).encode()
+    writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\nConnection: close\r\n\r\n" + payload)
+    await writer.drain()
+
+
 async def handle_client(c_r: asyncio.StreamReader, c_w: asyncio.StreamWriter):
     try:
         request_line, headers, raw = await read_headers(c_r)
@@ -273,6 +432,28 @@ async def handle_client(c_r: asyncio.StreamReader, c_w: asyncio.StreamWriter):
             if await serve_manager_api(c_w, method, target.split("?")[0], b""):
                 c_w.close()
                 return
+        from urllib.parse import parse_qs, urlsplit as _us
+        _t = _us(target) if target.startswith("http") else None
+        _path = (_t.path if _t else target.split("?")[0])
+        _query = (_t.query if _t else target.partition("?")[2])
+        if _path == "/fetch":
+            if not check_token(headers, _query):
+                c_w.write(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+                await c_w.drain()
+                c_w.close()
+                return
+            length = int(headers.get("content-length", "0") or 0)
+            if length > MAX_FETCH_BYTES + 65536:
+                c_w.write(b"HTTP/1.1 413 Too Large\r\nConnection: close\r\n\r\n")
+                await c_w.drain()
+                c_w.close()
+                return
+            rest = raw.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in raw else b""
+            need = length - len(rest)
+            body = rest[:length] if need <= 0 else rest + await c_r.readexactly(need)
+            await serve_fetch(c_w, method, headers, _query, body)
+            c_w.close()
+            return
         parsed = parse_target(request_line, headers)
         if not parsed or not parsed[0]:
             c_w.write(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
