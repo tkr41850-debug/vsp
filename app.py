@@ -25,7 +25,8 @@ status_cache: dict[int, dict[str, str]] = {}
 PROXY_TOKEN = os.environ.get("PROXY_TOKEN", "")
 MAX_FETCH_BYTES = 10 * 1024 * 1024
 DEBUG_CLI = os.environ.get("DEBUG", "") == "1"
-SEND_CHUNK = int(os.environ.get("SEND_CHUNK", "1000"))
+SEND_CHUNK = int(os.environ.get("SEND_CHUNK", "500"))
+SEND_PACE_SEC = float(os.environ.get("SEND_PACE_SEC", "0.2"))
 FETCH_HELLO = os.environ.get("FETCH_HELLO", "compact")
 
 
@@ -53,12 +54,15 @@ def nodelay(writer: asyncio.StreamWriter) -> None:
         pass
 
 
-async def chunked_write(writer: asyncio.StreamWriter, data: bytes, chunk: int = SEND_CHUNK) -> None:
+async def chunked_write(writer: asyncio.StreamWriter, data: bytes, chunk: int = SEND_CHUNK,
+                        pace: float = SEND_PACE_SEC) -> None:
     view = memoryview(data)
     while view:
-        writer.write(bytes(view[:chunk]))
+        piece, view = view[:chunk], view[chunk:]
+        writer.write(bytes(piece))
         await writer.drain()
-        view = view[chunk:]
+        if view and pace > 0:
+            await asyncio.sleep(pace)
 DEBUG_KEY_FILE = "debug.key"
 
 
@@ -358,7 +362,12 @@ def fetch_blocking(socks_port: int, method: str, url: str,
         if body:
             out.append(f"Content-Length: {len(body)}")
         raw = ("\r\n".join(out) + "\r\n\r\n").encode("latin1") + body
-        s.sendall(raw)
+        view = memoryview(raw)
+        while view:
+            piece, view = view[:SEND_CHUNK], view[SEND_CHUNK:]
+            s.sendall(bytes(piece))
+            if view and SEND_PACE_SEC > 0:
+                time.sleep(SEND_PACE_SEC)
         f = s.makefile("rb")
         status_line = f.readline(8192).decode("latin1").strip()
         parts = status_line.split(" ", 2)

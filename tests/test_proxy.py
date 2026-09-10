@@ -597,3 +597,25 @@ def test_nodelay_sets_option():
     warp_app.nodelay(FakeW())
     assert seen.get((_sock.IPPROTO_TCP, _sock.TCP_NODELAY)) == 1
     warp_app.nodelay(object())
+
+
+def test_chunked_write_paces():
+    import time as _t
+    class FakeW:
+        def __init__(self):
+            self.chunks = []
+        def write(self, data):
+            self.chunks.append(bytes(data))
+        async def drain(self):
+            pass
+    async def _go():
+        w = FakeW()
+        start = _t.monotonic()
+        await warp_app.chunked_write(w, b"z" * 1200, chunk=500, pace=0.2)
+        dt = _t.monotonic() - start
+        assert [len(c) for c in w.chunks] == [500, 500, 200]
+        assert dt >= 0.35
+        w2 = FakeW()
+        await warp_app.chunked_write(w2, b"z" * 400, chunk=500, pace=0.2)
+        assert [len(c) for c in w2.chunks] == [400]
+    asyncio.run(_go())
