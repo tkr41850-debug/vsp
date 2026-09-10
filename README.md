@@ -57,7 +57,7 @@ just via-proxy         # curl through the edge, expect a WARP exit IP
 |---|---|---|
 | `VSP_API_BASE` | `https://pool.example.invalid` | Pool URL for the edge client |
 | `PROXY_TOKEN` | empty (open) | If set, `/fetch` + `/relay` require `Bearer` token or `?token=` |
-| `WARP_PROTOCOL` | `WireGuard` | `warp-cli tunnel protocol set` value per instance |
+| `WARP_PROTOCOL` | `MASQUE` | `warp-cli tunnel protocol set` value per instance (proxy mode only supports MASQUE — WireGuard fails instantly) |
 | `WARP_MASQUE` | empty (CF default) | e.g. `h2-only` for TCP-only MASQUE where UDP is filtered |
 | `NUM_WARPS` | `8` | Pool size (registrations stagger: 1 at boot, +1 per 8h shared budget) |
 | `HOLD_TIMEOUT` | `10` | Seconds to hold requests while no warp is ready, then `502 + Retry-After: 5` |
