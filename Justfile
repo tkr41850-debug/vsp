@@ -34,6 +34,9 @@ client listen="8080": edge-build
     sudo docker run -d --name warp-edge --restart unless-stopped -p 127.0.0.1:{{listen}}:8080 -e VSP_API_BASE="${VSP_API_BASE:-https://pool.example.invalid}" -e EDGE_PORT=8080 warp-edge
     @echo "edge up: 127.0.0.1:{{listen}} -> ${VSP_API_BASE:-https://pool.example.invalid} (restart unless-stopped)"
 
+debug-key:
+    @cat {{data}}/debug.key 2>/dev/null || echo "no debug key yet (start server with DEBUG=1 first)"
+
 stop:
     -sudo docker rm -f {{image}} 2>/dev/null
     -[ -f /tmp/warp-proxy-local.pid ] && kill "$(cat /tmp/warp-proxy-local.pid)" 2>/dev/null; rm -f /tmp/warp-proxy-local.pid

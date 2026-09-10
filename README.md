@@ -47,6 +47,7 @@ just via-proxy         # curl through the edge, expect a WARP exit IP
 | `just via-proxy` / `just direct` | `curl.sh` through the edge / direct baseline IP |
 | `just test` | Mocked pytest suite (no network needed) |
 | `just stop` / `just logs` | Stop everything / tail logs |
+| `just debug-key` | Print the debug key (pool machine, needs a `DEBUG=1` boot first) |
 
 ## Env
 
@@ -62,3 +63,18 @@ just via-proxy         # curl through the edge, expect a WARP exit IP
 Identities persist in `./data/warpN` (mounted to `/data`, git-ignored) so restarts
 reuse registrations. If prompted `Kill existing? [Y/n]`, a server container is
 already running.
+
+## Debugging the pool
+
+`DEBUG=1 just server` exposes `POST /debug/cli`, which runs
+`warp-cli --accept-tos <args…>` against instance `N` (`{"instance":N,"args":[...]}`,
+or `{"runtime_dir":"/run/warpN",...}`). Every call needs the secret header:
+
+```
+KEY=$(just debug-key)   # on the pool machine; 64 random bytes in data/debug.key
+curl -X POST https://<pool>/debug/cli -H "X-Debug-Key: $KEY" \
+  -H 'Content-Type: application/json' -d '{"instance":1,"args":["status"]}'
+```
+
+Without `DEBUG=1` the endpoint is 404; with a wrong key it's 403. Turn it off
+(restart without `DEBUG`) when done.

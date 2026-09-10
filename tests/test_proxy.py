@@ -294,10 +294,11 @@ def test_parse_status_output():
     assert warp_app.parse_status_output("") == ("unknown", "")
 
 
-async def _debug_post(port: int, spec: dict) -> tuple[int, dict]:
+async def _debug_post(port: int, spec: dict, extra_headers: str = "") -> tuple[int, dict]:
     body = json.dumps(spec).encode()
     r, w = await asyncio.open_connection("127.0.0.1", port)
     w.write(f"POST /debug/cli HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+            f"{extra_headers}"
             f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
     await w.drain()
     raw = await r.read()
@@ -307,11 +308,17 @@ async def _debug_post(port: int, spec: dict) -> tuple[int, dict]:
     return status, json.loads(rbody.decode() or "{}")
 
 
-def test_debug_cli():
+def _debug_key_header() -> str:
+    return f"X-Debug-Key: {warp_app.get_debug_key()}\r\n"
+
+
+def test_debug_cli(monkeypatch, tmp_path):
     import shutil as _sh
     if _sh.which("warp-cli") is None:
         import pytest as _pt
         _pt.skip("warp-cli not installed")
+    monkeypatch.setattr(warp_app, "DATA_ROOT", tmp_path)
+    hdr = f"X-Debug-Key: {warp_app.get_debug_key()}\r\n"
 
     async def _go():
         srv = await asyncio.start_server(warp_app.handle_client, "127.0.0.1", 0)
@@ -328,14 +335,14 @@ def test_debug_cli():
             port2 = srv2.sockets[0].getsockname()[1]
             warp_app.DEBUG_CLI = True
             try:
-                st, res = await _debug_post(port2, {"instance": 1, "args": ["--version"]})
+                st, res = await _debug_post(port2, {"instance": 1, "args": ["--version"]}, hdr)
                 assert st == 200 and res["ok"] is True and res["rc"] == 0
                 assert "20" in res["stdout"]
-                st, _ = await _debug_post(port2, {"instance": 1, "args": "oops"})
+                st, _ = await _debug_post(port2, {"instance": 1, "args": "oops"}, hdr)
                 assert st == 400
-                st, _ = await _debug_post(port2, {"instance": 99, "args": ["--version"]})
+                st, _ = await _debug_post(port2, {"instance": 99, "args": ["--version"]}, hdr)
                 assert st == 400
-                st, res = await _debug_post(port2, {"runtime_dir": "/run/warp2", "args": ["--version"]})
+                st, res = await _debug_post(port2, {"runtime_dir": "/run/warp2", "args": ["--version"]}, hdr)
                 assert st == 200 and res["rc"] == 0
             finally:
                 srv2.close()
@@ -393,4 +400,44 @@ def test_no_heal_when_all_down(monkeypatch):
             assert not any(c[1][-2:] == ("registration", "delete") for c in calls), calls
         finally:
             warp_app.manager = old_manager
+    asyncio.run(_go())
+
+
+def test_debug_key_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(warp_app, "DATA_ROOT", tmp_path)
+    key = warp_app.get_debug_key()
+    assert len(key) == 128
+    assert (tmp_path / "debug.key").read_text().strip() == key
+    assert warp_app.get_debug_key() == key
+    assert warp_app.check_debug_key({"x-debug-key": key}) is True
+    assert warp_app.check_debug_key({"x-debug-key": "wrong"}) is False
+    assert warp_app.check_debug_key({}) is False
+
+
+def test_debug_cli_requires_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(warp_app, "DATA_ROOT", tmp_path)
+    key = warp_app.get_debug_key()
+
+    async def _go():
+        srv = await asyncio.start_server(warp_app.handle_client, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        old = warp_app.DEBUG_CLI
+        warp_app.DEBUG_CLI = True
+        try:
+            st, _ = await _debug_post(port, {"instance": 1, "args": ["--version"]})
+            assert st == 403
+            r, w = await asyncio.open_connection("127.0.0.1", port)
+            body = json.dumps({"instance": 1, "args": ["--version"]}).encode()
+            w.write(f"POST /debug/cli HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                    f"X-Debug-Key: {key}\r\nContent-Length: {len(body)}\r\n"
+                    f"Connection: close\r\n\r\n".encode() + body)
+            await w.drain()
+            raw = await r.read()
+            w.close()
+            st = int(raw.split(b"\r\n", 1)[0].split()[1])
+            res = json.loads(raw.partition(b"\r\n\r\n")[2].decode() or "{}")
+            assert st == 200 and res["ok"] is True
+        finally:
+            srv.close()
+            warp_app.DEBUG_CLI = old
     asyncio.run(_go())

@@ -20,6 +20,31 @@ BOOT_RETRY_SEC = int(os.environ.get("BOOT_RETRY_SEC", "300"))
 PROXY_TOKEN = os.environ.get("PROXY_TOKEN", "")
 MAX_FETCH_BYTES = 10 * 1024 * 1024
 DEBUG_CLI = os.environ.get("DEBUG", "") == "1"
+DEBUG_KEY_FILE = "debug.key"
+
+
+def get_debug_key() -> str:
+    import secrets as _secrets
+    path = DATA_ROOT / DEBUG_KEY_FILE
+    try:
+        key = path.read_text().strip()
+        if len(key) >= 32:
+            return key
+    except OSError:
+        pass
+    key = _secrets.token_hex(64)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(key + "\n")
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        log.warning("cannot persist debug key: %s", exc)
+    return key
+
+
+def check_debug_key(headers: dict) -> bool:
+    import hmac as _hmac
+    return _hmac.compare_digest(headers.get("x-debug-key", ""), get_debug_key())
 
 log = logging.getLogger("warp-proxy")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -604,6 +629,11 @@ async def handle_client(c_r: asyncio.StreamReader, c_w: asyncio.StreamWriter):
                 await c_w.drain()
                 c_w.close()
                 return
+            if not check_debug_key(headers):
+                c_w.write(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+                await c_w.drain()
+                c_w.close()
+                return
             length = int(headers.get("content-length", "0") or 0)
             rest = raw.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in raw else b""
             need = length - len(rest)
@@ -783,6 +813,9 @@ async def boot_one(w: WarpInstance):
 async def main():
     for i in range(1, NUM_WARPS + 1):
         (DATA_ROOT / f"warp{i}").mkdir(parents=True, exist_ok=True)
+    if DEBUG_CLI:
+        get_debug_key()
+        log.info("debug cli enabled, key at %s", DATA_ROOT / DEBUG_KEY_FILE)
     asyncio.create_task(registration_scheduler())
     server = await asyncio.start_server(handle_client, LISTEN_HOST, LISTEN_PORT)
     log.info("warp forward-proxy on %s:%s hold=%ss warps=%s", LISTEN_HOST, LISTEN_PORT, HOLD_TIMEOUT, NUM_WARPS)
