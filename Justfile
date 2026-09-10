@@ -52,6 +52,19 @@ rotate:
 pool:
     @VSP_API_BASE="${VSP_API_BASE:-https://pool.example.invalid}" bash scripts/pool.sh
 
+# Probes (pool default https://pool.example.invalid, edge default http://127.0.0.1:8080)
+probe-edge:
+    @python3 scripts/probe_edge.py --edge http://127.0.0.1:{{port}}
+
+probe-fetch:
+    @python3 scripts/probe_fetch.py --base "${VSP_API_BASE:-https://pool.example.invalid}"
+
+probe-tls:
+    @python3 scripts/probe_tls.py --base "${VSP_API_BASE:-https://pool.example.invalid}"
+
+probe-sizes:
+    @python3 scripts/probe_sizes.py --base "${VSP_API_BASE:-https://pool.example.invalid}"
+
 via-proxy:
     curl -s --max-time 25 -x http://127.0.0.1:{{port}} -L ipconfig.me; echo
 
