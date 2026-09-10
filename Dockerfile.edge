@@ -1,0 +1,8 @@
+FROM debian:trixie-slim
+ENV PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY edge.py wscodec.py /app/
+EXPOSE 8080
+CMD ["python3", "/app/edge.py"]
