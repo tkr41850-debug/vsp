@@ -20,7 +20,7 @@ alias up := server
 # Deploy where UDP egress works, then expose over e.g. `cloudflared tunnel`.
 server listen="8080": build
     mkdir -p {{data}}
-    sudo docker rm -f {{image}} 2>/dev/null || true
+    if [ -n "$(sudo docker ps -q -f name=^{{image}}$)" ]; then read -p "Kill existing {{image}}? [Y/n] " ans; case "$ans" in [Nn]*) echo "aborted; keeping existing {{image}}"; exit 1;; *) sudo docker rm -f {{image}};; esac; else sudo docker rm -f {{image}} 2>/dev/null || true; fi
     sudo docker run -d --name {{image}} --restart unless-stopped --privileged --device=/dev/net/tun -p 127.0.0.1:{{listen}}:8080 -v "$PWD/{{data}}:/data" -e NUM_WARPS={{warps}} -e PROXY_PORT=8080 -e HOLD_TIMEOUT=10 {{image}}
     @echo "server up: 127.0.0.1:{{listen}} (restart unless-stopped). try: just health && just via-proxy"
 
