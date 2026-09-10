@@ -8,16 +8,30 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DATA_ROOT = Path(os.environ.get("WARP_DATA_ROOT", "/data"))
-LISTEN_HOST = os.environ.get("LISTEN_HOST", "127.0.0.1")
-LISTEN_PORT = int(os.environ.get("PROXY_PORT", "8080"))
-NUM_WARPS = int(os.environ.get("NUM_WARPS", "8"))
-HOLD_TIMEOUT = float(os.environ.get("HOLD_TIMEOUT", "10"))
-BASE_SOCKS_PORT = int(os.environ.get("BASE_SOCKS_PORT", "40001"))
-REG_INTERVAL_SEC = int(os.environ.get("REG_INTERVAL_SEC", "28800"))
-INITIAL_BURST = int(os.environ.get("INITIAL_BURST", "1"))
-BOOT_RETRY_SEC = int(os.environ.get("BOOT_RETRY_SEC", "300"))
-STATUS_CACHE_SEC = int(os.environ.get("STATUS_CACHE_SEC", "30"))
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+DATA_ROOT = Path(os.environ.get("WARP_DATA_ROOT", "/data") or "/data")
+LISTEN_HOST = os.environ.get("LISTEN_HOST", "127.0.0.1") or "127.0.0.1"
+LISTEN_PORT = _env_int("PROXY_PORT", 8080)
+NUM_WARPS = _env_int("NUM_WARPS", 8)
+HOLD_TIMEOUT = _env_float("HOLD_TIMEOUT", 10)
+BASE_SOCKS_PORT = _env_int("BASE_SOCKS_PORT", 40001)
+REG_INTERVAL_SEC = _env_int("REG_INTERVAL_SEC", 28800)
+INITIAL_BURST = _env_int("INITIAL_BURST", 1)
+BOOT_RETRY_SEC = _env_int("BOOT_RETRY_SEC", 300)
+STATUS_CACHE_SEC = _env_int("STATUS_CACHE_SEC", 30)
 WARP_PROTOCOL = os.environ.get("WARP_PROTOCOL") or "MASQUE"
 WARP_MASQUE = os.environ.get("WARP_MASQUE") or ""
 last_reg_ts: float = -REG_INTERVAL_SEC
@@ -25,8 +39,8 @@ status_cache: dict[int, dict[str, str]] = {}
 PROXY_TOKEN = os.environ.get("PROXY_TOKEN", "")
 MAX_FETCH_BYTES = 10 * 1024 * 1024
 DEBUG_CLI = os.environ.get("DEBUG", "") == "1"
-SEND_CHUNK = int(os.environ.get("SEND_CHUNK", "500"))
-SEND_PACE_SEC = float(os.environ.get("SEND_PACE_SEC", "0.2"))
+SEND_CHUNK = _env_int("SEND_CHUNK", 500)
+SEND_PACE_SEC = _env_float("SEND_PACE_SEC", 0.2)
 FETCH_HELLO = os.environ.get("FETCH_HELLO", "compact")
 
 
@@ -116,8 +130,8 @@ def run_cli(i: int, *args: str, timeout: int = 20) -> tuple[int, str]:
     except Exception as exc:
         return 1, str(exc)
 
-STALE_FAIL_THRESHOLD = int(os.environ.get("STALE_FAIL_THRESHOLD", "3"))
-HEAL_COOLDOWN_SEC = int(os.environ.get("HEAL_COOLDOWN_SEC", "3600"))
+STALE_FAIL_THRESHOLD = _env_int("STALE_FAIL_THRESHOLD", 3)
+HEAL_COOLDOWN_SEC = _env_int("HEAL_COOLDOWN_SEC", 3600)
 
 
 @dataclass

@@ -648,3 +648,16 @@ def test_ephemeral_tune(monkeypatch, tmp_path):
             warp_app.DEBUG_CLI = old
             warp_app.SEND_CHUNK, warp_app.SEND_PACE_SEC, warp_app.FETCH_HELLO = old_chunk, old_pace, old_hello
     asyncio.run(_go())
+
+
+def test_env_helpers_tolerate_empty(monkeypatch):
+    monkeypatch.setenv("PROXY_PORT", "")
+    monkeypatch.setenv("SEND_CHUNK", "")
+    monkeypatch.setenv("SEND_PACE_SEC", "")
+    monkeypatch.setenv("NUM_WARPS", "bogus")
+    assert warp_app._env_int("PROXY_PORT", 8080) == 8080
+    assert warp_app._env_int("SEND_CHUNK", 500) == 500
+    assert warp_app._env_float("SEND_PACE_SEC", 0.2) == 0.2
+    assert warp_app._env_int("NUM_WARPS", 8) == 8
+    monkeypatch.setenv("SEND_CHUNK", "750")
+    assert warp_app._env_int("SEND_CHUNK", 500) == 750
