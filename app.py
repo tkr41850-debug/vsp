@@ -43,6 +43,16 @@ def tls_context(server_hostname: str | None = None) -> object:
     return ctx
 
 
+def nodelay(writer: asyncio.StreamWriter) -> None:
+    try:
+        import socket as _sock
+        sock = writer.get_extra_info("socket")
+        if sock is not None:
+            sock.setsockopt(_sock.IPPROTO_TCP, _sock.TCP_NODELAY, 1)
+    except Exception:
+        pass
+
+
 async def chunked_write(writer: asyncio.StreamWriter, data: bytes, chunk: int = SEND_CHUNK) -> None:
     view = memoryview(data)
     while view:
@@ -313,6 +323,10 @@ def fetch_blocking(socks_port: int, method: str, url: str,
         raise ValueError("body too large")
     s = _sock.create_connection(("127.0.0.1", socks_port), timeout=timeout)
     s.settimeout(timeout)
+    try:
+        s.setsockopt(_sock.IPPROTO_TCP, _sock.TCP_NODELAY, 1)
+    except OSError:
+        pass
     try:
         s.sendall(b"\x05\x01\x00")
         if _recvn(s, 2) != b"\x05\x00":
@@ -806,6 +820,7 @@ async def handle_client(c_r: asyncio.StreamReader, c_w: asyncio.StreamWriter):
                     asyncio.open_connection("127.0.0.1", _inst.socks_port), timeout=10)
                 _sr, _sw = await asyncio.wait_for(
                     socks5_connect((_sr, _sw), _rh, _rp), timeout=10)
+                nodelay(_sw)
             except Exception as exc:
                 _inst.last_error = str(exc)[-200:]
                 c_w.write(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
@@ -914,6 +929,7 @@ async def handle_client(c_r: asyncio.StreamReader, c_w: asyncio.StreamWriter):
                 asyncio.open_connection("127.0.0.1", inst.socks_port), timeout=10)
             s_r, s_w = await asyncio.wait_for(
                 socks5_connect((s_r, s_w), host, port), timeout=10)
+            nodelay(s_w)
         except Exception as exc:
             inst.last_error = str(exc)[-200:]
             c_w.write(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")

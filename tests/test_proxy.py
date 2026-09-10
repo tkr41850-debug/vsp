@@ -583,3 +583,17 @@ def test_compact_hello_small(monkeypatch):
     except _ssl.SSLWantReadError:
         pass
     assert len(bo.read()) < 800
+
+
+def test_nodelay_sets_option():
+    import socket as _sock
+    seen = {}
+    class FakeSock:
+        def setsockopt(self, level, opt, val):
+            seen[(level, opt)] = val
+    class FakeW:
+        def get_extra_info(self, name):
+            return FakeSock() if name == "socket" else None
+    warp_app.nodelay(FakeW())
+    assert seen.get((_sock.IPPROTO_TCP, _sock.TCP_NODELAY)) == 1
+    warp_app.nodelay(object())
